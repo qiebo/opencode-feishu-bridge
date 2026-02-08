@@ -357,7 +357,7 @@ export class MessageHandler {
       return true;
     }
 
-    const taskKeywordPattern = /(修复|实现|编写|写一个|创建|生成|搜索|查找|分析|总结|整理|翻译|运行|执行|部署|安装|调试|测试|重构|review|fix|implement|create|generate|search|analy[sz]e|summari[sz]e|refactor|write|run|execute|deploy|install|debug|test|command|script|file|bug|issue)/i;
+    const taskKeywordPattern = /(修复|实现|编写|写一个|创建|生成|搜索|查找|分析|总结|整理|翻译|运行|执行|部署|安装|调试|测试|重构|报错|错误|异常|review|fix|implement|create|generate|search|analy[sz]e|summari[sz]e|refactor|write|run|execute|deploy|install|debug|test|command|script|file|bug|issue)/i;
     if (taskKeywordPattern.test(text)) {
       return true;
     }
@@ -378,8 +378,14 @@ export class MessageHandler {
       return true;
     }
 
-    const chatQuestionPattern = /(你是谁|你叫什么|你会什么|你能做什么|当前(使用)?模型|用的.*模型|什么模型|哪个模型|状态如何|status|health|还在吗|忙吗)/i;
+    const chatQuestionPattern = /(你是谁|你叫什么|你会什么|你能做什么|当前(使用)?模型|用的.*模型|什么模型|哪个模型|状态如何|status|health|还在吗|忙吗|你在吗|在线吗|在吗|在不在|在嘛)/i;
     if (shortText && chatQuestionPattern.test(normalized)) {
+      return true;
+    }
+
+    const smallTalkMixedPattern = /(hello|hi|hey|你好|嗨|哈喽|在吗|在线吗|你在吗|在不在|忙吗|在嘛)/i;
+    const explicitTaskPattern = /(修复|实现|编写|创建|生成|搜索|查找|分析|运行|执行|部署|安装|调试|测试|报错|错误|异常|代码|文件|命令|fix|implement|create|generate|search|run|execute|debug|test|file|command|bug|issue)/i;
+    if (shortText && smallTalkMixedPattern.test(normalized) && !explicitTaskPattern.test(normalized)) {
       return true;
     }
 
