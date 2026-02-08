@@ -166,19 +166,6 @@ $OPENCODE_PATH models
 6. `bash scripts/install-systemd-user.sh`
 7. 在飞书发送 `!status` 验证联通
 
-## 上传到 GitHub（首次）
-
-```bash
-cd /path/to/opencode-feishu-bridge
-git init
-git add .
-git status
-git commit -m "feat: opencode feishu bridge with deployment docs and security hygiene"
-git branch -M main
-git remote add origin <your-github-repo-url>
-git push -u origin main
-```
-
 推送前务必再次确认 `git status` 中没有 `.env.runtime`、`logs/`、`node_modules/`、本地 `config.json`。
 
 ## 许可证
