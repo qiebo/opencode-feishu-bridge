@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+coverage/
+
+# Runtime state
+logs/
+*.log
+.feishu_uploads/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+config.json
+
+# Local tooling/runtime artifacts
+*.pid
+*.swp
+*.swo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
