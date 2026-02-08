@@ -1,6 +1,8 @@
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type ConnectionMode = 'websocket' | 'webhook';
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type IntentHint = 'chat' | 'task' | 'ambiguous';
+export type TaskResponseMode = 'silent' | 'verbose';
 
 export interface FeishuBotConfig {
   appId: string;
@@ -61,6 +63,7 @@ export interface BotResponse {
   text?: string;
   card?: Record<string, unknown>;
   executeCommand?: string;
+  intentHint?: IntentHint;
   sendFilePath?: string;
   resetSession?: boolean;
 }
@@ -78,6 +81,7 @@ export interface SessionInfo {
 export interface TaskInfo {
   id: string;
   status: TaskStatus;
+  responseMode?: TaskResponseMode;
   command: string;
   userId: string;
   chatId: string;

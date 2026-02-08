@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import type { BotResponse, FeishuMessageEvent, SessionInfo, TaskInfo } from '../types.js';
+import type { BotResponse, FeishuMessageEvent, IntentHint, SessionInfo, TaskInfo, TaskResponseMode } from '../types.js';
 
 export class MessageHandler {
   private sessions: Map<string, SessionInfo> = new Map();
@@ -53,6 +53,7 @@ export class MessageHandler {
           text: '🆕 已切换到新会话，开始执行新任务。',
           resetSession: true,
           executeCommand: sessionReset.command,
+          intentHint: this.inferIntentHint(sessionReset.command),
         };
       }
 
@@ -74,6 +75,7 @@ export class MessageHandler {
 
     return {
       executeCommand,
+      intentHint: this.inferIntentHint(executeCommand),
     };
   }
 
@@ -96,9 +98,18 @@ export class MessageHandler {
     };
   }
 
-  handleTaskComplete(task: TaskInfo): BotResponse {
+  handleTaskComplete(task: TaskInfo, options?: { mode?: TaskResponseMode }): BotResponse {
     this.updateTask(task);
     const output = this.normalizeOutput(task.output.join(''));
+    const mode = options?.mode || 'verbose';
+
+    if (mode === 'silent') {
+      const compactText = output.length > 1800 ? `${output.substring(0, 1800)}...` : output;
+      return {
+        text: compactText || '（无回复）',
+      };
+    }
+
     const truncated = output.length > 1200 ? output.substring(output.length - 1200) : output;
     const duration = task.duration ? `（${(task.duration / 1000).toFixed(2)}s）` : '';
 
@@ -107,15 +118,27 @@ export class MessageHandler {
     };
   }
 
-  handleTaskError(task: TaskInfo, error: Error): BotResponse {
+  handleTaskError(task: TaskInfo, error: Error, options?: { mode?: TaskResponseMode }): BotResponse {
     this.updateTask(task);
+    const mode = options?.mode || 'verbose';
+    if (mode === 'silent') {
+      return {
+        text: `❌ ${error.message}`,
+      };
+    }
     return {
       text: `❌ 任务失败\n任务 ID：\`${task.id}\`\n原因：${error.message}`,
     };
   }
 
-  handleTaskUpdate(task: TaskInfo): BotResponse {
+  handleTaskUpdate(task: TaskInfo, options?: { mode?: TaskResponseMode }): BotResponse {
     this.updateTask(task);
+    const mode = options?.mode || 'verbose';
+    if (mode === 'silent') {
+      return {
+        text: `⚠️ 状态：${task.status}`,
+      };
+    }
     return {
       text: `任务 \`${task.id}\` 状态：${task.status}`,
     };
@@ -301,6 +324,70 @@ export class MessageHandler {
     }
 
     return { shouldReset: true, command: remainder };
+  }
+
+  private inferIntentHint(command: string): IntentHint {
+    const text = command.trim();
+    if (!text) {
+      return 'ambiguous';
+    }
+
+    if (this.looksLikeTask(text)) {
+      return 'task';
+    }
+
+    if (this.looksLikeChat(text)) {
+      return 'chat';
+    }
+
+    return 'ambiguous';
+  }
+
+  private looksLikeTask(text: string): boolean {
+    if (text.length >= 90) {
+      return true;
+    }
+
+    if (text.includes('\n')) {
+      return true;
+    }
+
+    const structuralTaskPattern = /```|`[^`]+`|\/[\w.\-]+|\.[a-z0-9]{1,6}\b/i;
+    if (structuralTaskPattern.test(text)) {
+      return true;
+    }
+
+    const taskKeywordPattern = /(修复|实现|编写|写一个|创建|生成|搜索|查找|分析|总结|整理|翻译|运行|执行|部署|安装|调试|测试|重构|review|fix|implement|create|generate|search|analy[sz]e|summari[sz]e|refactor|write|run|execute|deploy|install|debug|test|command|script|file|bug|issue)/i;
+    if (taskKeywordPattern.test(text)) {
+      return true;
+    }
+
+    if (/^(请|帮我|麻烦|给我)/.test(text) && text.length > 20) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private looksLikeChat(text: string): boolean {
+    const normalized = text.trim();
+    const shortText = normalized.length <= 50;
+
+    const chatGreetingPattern = /^(在吗|在线吗|你在吗|你好|嗨|hello|hi|hey|早上好|晚上好|午安|谢谢|感谢|收到|ok|好的|辛苦了)[!?？。！\s]*$/i;
+    if (chatGreetingPattern.test(normalized)) {
+      return true;
+    }
+
+    const chatQuestionPattern = /(你是谁|你叫什么|你会什么|你能做什么|当前(使用)?模型|用的.*模型|什么模型|哪个模型|状态如何|status|health|还在吗|忙吗)/i;
+    if (shortText && chatQuestionPattern.test(normalized)) {
+      return true;
+    }
+
+    if (shortText && /[?？]$/.test(normalized) && !this.looksLikeTask(normalized)) {
+      return true;
+    }
+
+    return false;
   }
 
   private normalizeOutput(output: string): string {

@@ -68,6 +68,18 @@
 - 执行器改为 `--format json` 解析 `sessionID` 并自动追踪
 - 文件：`src/relay/message-handler.ts`、`src/index.ts`、`src/executor/opencode-executor.ts`
 
+### 10) 简单对话静默回复 + 歧义意图路由
+
+- 新增三态意图提示：`chat` / `task` / `ambiguous`
+- 明确 `chat`：只发送最终结果（不发送开始/执行中/完成）
+- 明确 `task`：保持原有状态流回复
+- `ambiguous`：额外调用一次 opencode 进行意图分类，返回 JSON 标签后决定回复模式
+- 可调环境变量：
+  - `OPENCODE_INTENT_ROUTING_ENABLED`
+  - `OPENCODE_INTENT_ROUTING_TIMEOUT`
+  - `OPENCODE_INTENT_CONFIDENCE`
+- 文件：`src/relay/message-handler.ts`、`src/index.ts`、`src/executor/opencode-executor.ts`、`src/config.ts`、`src/types.ts`
+
 ## 运行方式（当前有效）
 
 > 当前代码读取环境变量，不读取 `config.json`。
@@ -132,7 +144,7 @@ tail -f logs/bridge.log
 - `scripts/preflight.sh`
 - `scripts/install-systemd-user.sh`
 
-## 10) GitHub 发布与可部署性增强（2026-02-08）
+## 11) GitHub 发布与可部署性增强（2026-02-08）
 
 ### 安全治理
 

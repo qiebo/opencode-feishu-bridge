@@ -66,6 +66,9 @@
 - `OPENCODE_STREAMING_INTERVAL`（默认 `5000`）
 - `OPENCODE_MAX_CONCURRENT`（默认 `5`）
 - `OPENCODE_AUTO_MODEL_DETECT`（默认 `true`）
+- `OPENCODE_INTENT_ROUTING_ENABLED`（默认 `true`，仅对歧义消息启用意图分类）
+- `OPENCODE_INTENT_ROUTING_TIMEOUT`（默认 `4000`）
+- `OPENCODE_INTENT_CONFIDENCE`（默认 `0.75`，分类为 `chat` 且高于阈值才静默模式）
 - `REQUIRE_MENTION`（默认 `true`）
 - `SESSION_TIMEOUT`（默认 `3600000`）
 - `SESSION_MAX_HISTORY`（默认 `20`）
@@ -127,6 +130,12 @@ journalctl --user -u opencode-feishu-bridge.service -f
 - 同一用户 + 同一聊天会话默认复用同一个 opencode session
 - 发送 `/new` 或 `!new` 时重置会话
 - 发送“新开/重置 会话(session/上下文)”这类自然语言也会触发新会话
+
+## 回复策略（聊天 vs 任务）
+
+- 明确任务指令：直接走 `verbose`（开始/进度/完成）
+- 明确闲聊问答：直接走 `silent`（仅最终结果）
+- 歧义消息：先调用一次 opencode 做意图分类，再决定 `silent` 或 `verbose`
 
 ## 常见问题
 

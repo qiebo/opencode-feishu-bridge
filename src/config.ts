@@ -25,6 +25,9 @@ export interface Config {
     streamingInterval: number;
     model?: string;
     autoDetectModel: boolean;
+    intentRoutingEnabled: boolean;
+    intentRoutingTimeout: number;
+    intentRoutingConfidence: number;
   };
   session: {
     timeout: number;
@@ -60,6 +63,9 @@ const defaultConfig: Config = {
     streamingInterval: parseInt(process.env.OPENCODE_STREAMING_INTERVAL || '5000'),
     model: process.env.OPENCODE_MODEL || undefined,
     autoDetectModel: process.env.OPENCODE_AUTO_MODEL_DETECT !== 'false',
+    intentRoutingEnabled: process.env.OPENCODE_INTENT_ROUTING_ENABLED !== 'false',
+    intentRoutingTimeout: parseInt(process.env.OPENCODE_INTENT_ROUTING_TIMEOUT || '4000'),
+    intentRoutingConfidence: parseFloat(process.env.OPENCODE_INTENT_CONFIDENCE || '0.75'),
   },
   session: {
     timeout: parseInt(process.env.SESSION_TIMEOUT || '3600000'),

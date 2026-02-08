@@ -2,7 +2,7 @@ import { FeishuBot } from './bot/feishu-bot.js';
 import { config } from './config.js';
 import { OpencodeExecutor } from './executor/opencode-executor.js';
 import { MessageHandler } from './relay/message-handler.js';
-import type { FeishuMessageEvent, TaskInfo } from './types.js';
+import type { FeishuMessageEvent, IntentHint, TaskInfo, TaskResponseMode } from './types.js';
 import { logger } from './utils/logger.js';
 import { constants as fsConstants } from 'fs';
 import { access, mkdir, rm } from 'fs/promises';
@@ -18,6 +18,7 @@ export class OpenCodeFeishuBridge {
   private pendingProgress = new Map<string, string[]>();
   private pendingFilesBySession = new Map<string, string[]>();
   private taskAttachedFiles = new Map<string, string[]>();
+  private taskResponseMode = new Map<string, TaskResponseMode>();
   private opencodeSessionByBridgeSession = new Map<string, string>();
   private taskBridgeSession = new Map<string, string>();
   private lastUpdateTime = new Map<string, number>();
@@ -88,9 +89,14 @@ export class OpenCodeFeishuBridge {
 
       if (response.executeCommand) {
         const filePaths = this.consumePendingFiles(sessionId);
+        let responseMode: TaskResponseMode = 'verbose';
+
         if (filePaths.length > 0) {
           const fileNames = filePaths.map(filePath => basename(filePath)).join(', ');
           await this.bot.sendMessage(chatId, `📎 已附带文件：${fileNames}`, 'text');
+        } else {
+          const hint = response.intentHint || 'task';
+          responseMode = await this.resolveResponseMode(hint, response.executeCommand);
         }
 
         const opencodeSessionId = this.opencodeSessionByBridgeSession.get(sessionId);
@@ -101,9 +107,11 @@ export class OpenCodeFeishuBridge {
           messageId: message?.message_id || '',
           files: filePaths,
           opencodeSessionId,
+          responseMode,
         });
 
         this.taskBridgeSession.set(task.id, sessionId);
+        this.taskResponseMode.set(task.id, responseMode);
         if (task.opencodeSessionId) {
           this.opencodeSessionByBridgeSession.set(sessionId, task.opencodeSessionId);
         }
@@ -133,11 +141,17 @@ export class OpenCodeFeishuBridge {
 
     this.executor.on('task:queued', async ({ task }: { task: TaskInfo }) => {
       this.handler.updateTask(task);
+      if (this.getTaskResponseMode(task.id, task.responseMode) === 'silent') {
+        return;
+      }
       await this.bot.sendMessage(task.chatId, `⏳ 任务排队中\n任务 ID：\`${task.id}\``, 'text');
     });
 
     this.executor.on('task:started', async ({ task }: { task: TaskInfo }) => {
       this.handler.updateTask(task);
+      if (this.getTaskResponseMode(task.id, task.responseMode) === 'silent') {
+        return;
+      }
       this.lastUpdateTime.set(task.id, Date.now());
       const response = this.handler.handleTaskStart(task);
       if (response.text) {
@@ -148,43 +162,58 @@ export class OpenCodeFeishuBridge {
     this.executor.on(
       'task:progress',
       async ({ task, progress }: { task: TaskInfo; progress: string }) => {
+        if (this.getTaskResponseMode(task.id, task.responseMode) === 'silent') {
+          return;
+        }
         this.queueProgress(task.id, progress);
         await this.flushProgress(task, false);
       },
     );
 
     this.executor.on('task:completed', async ({ task }: { task: TaskInfo }) => {
-      await this.flushProgress(task, true);
+      const mode = this.getTaskResponseMode(task.id, task.responseMode);
+      if (mode === 'verbose') {
+        await this.flushProgress(task, true);
+      }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
+      this.taskResponseMode.delete(task.id);
       this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
-      const response = this.handler.handleTaskComplete(task);
+      const response = this.handler.handleTaskComplete(task, { mode });
       if (response.text) {
         await this.bot.sendMessage(task.chatId, response.text, 'text');
       }
     });
 
     this.executor.on('task:error', async ({ task, error }: { task: TaskInfo; error: Error }) => {
-      await this.flushProgress(task, true);
+      const mode = this.getTaskResponseMode(task.id, task.responseMode);
+      if (mode === 'verbose') {
+        await this.flushProgress(task, true);
+      }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
+      this.taskResponseMode.delete(task.id);
       this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
-      const response = this.handler.handleTaskError(task, error);
+      const response = this.handler.handleTaskError(task, error, { mode });
       if (response.text) {
         await this.bot.sendMessage(task.chatId, response.text, 'text');
       }
     });
 
     this.executor.on('task:cancelled', async ({ task, reason }: { task: TaskInfo; reason: string }) => {
-      await this.flushProgress(task, true);
+      const mode = this.getTaskResponseMode(task.id, task.responseMode);
+      if (mode === 'verbose') {
+        await this.flushProgress(task, true);
+      }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
+      this.taskResponseMode.delete(task.id);
       this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
       logger.info(`Task ${task.id} cancelled: ${reason}`);
-      const response = this.handler.handleTaskUpdate(task);
+      const response = this.handler.handleTaskUpdate(task, { mode });
       if (response.text) {
         await this.bot.sendMessage(task.chatId, response.text, 'text');
       }
@@ -242,6 +271,33 @@ export class OpenCodeFeishuBridge {
   private shouldSendUpdate(taskId: string): boolean {
     const lastTime = this.lastUpdateTime.get(taskId) || 0;
     return Date.now() - lastTime >= this.STREAMING_INTERVAL;
+  }
+
+  private getTaskResponseMode(taskId: string, fallback?: TaskResponseMode): TaskResponseMode {
+    return this.taskResponseMode.get(taskId) || fallback || 'verbose';
+  }
+
+  private async resolveResponseMode(intentHint: IntentHint, command: string): Promise<TaskResponseMode> {
+    if (intentHint === 'task') {
+      return 'verbose';
+    }
+
+    if (intentHint === 'chat') {
+      return 'silent';
+    }
+
+    if (!config.opencode.intentRoutingEnabled) {
+      return 'verbose';
+    }
+
+    const routing = await this.executor.classifyIntent(command);
+    logger.info(`Intent routing result: label=${routing.label}, confidence=${routing.confidence.toFixed(2)}`);
+
+    if (routing.label === 'chat' && routing.confidence >= config.opencode.intentRoutingConfidence) {
+      return 'silent';
+    }
+
+    return 'verbose';
   }
 
   private extractSenderId(event: FeishuMessageEvent): string {
