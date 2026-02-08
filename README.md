@@ -105,6 +105,8 @@ systemctl --user restart opencode-feishu-bridge.service
 journalctl --user -u opencode-feishu-bridge.service -f
 ```
 
+脚本会自动尝试执行 `loginctl enable-linger <user>`，保证重启后无需登录也能拉起用户服务。
+
 ## 飞书内使用方式
 
 - 私聊机器人：直接发送任务文本

@@ -43,6 +43,15 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now "$SERVICE_NAME"
 
+if command -v loginctl >/dev/null 2>&1; then
+  if loginctl enable-linger "$USER" >/dev/null 2>&1; then
+    echo "Enabled linger for user: $USER"
+  else
+    echo "WARN: Failed to enable linger automatically."
+    echo "Run manually if needed: loginctl enable-linger $USER"
+  fi
+fi
+
 echo "Installed and started: $SERVICE_NAME"
 echo "Service file: $SERVICE_FILE"
 echo "Check status: systemctl --user status $SERVICE_NAME --no-pager"

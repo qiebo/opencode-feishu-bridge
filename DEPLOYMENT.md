@@ -45,6 +45,8 @@ npm run build
 bash scripts/install-systemd-user.sh
 ```
 
+The installer also tries to run `loginctl enable-linger <user>` so the service can start after reboot even before interactive login.
+
 ## 6. Verify Service
 
 ```bash
