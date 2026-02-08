@@ -3,6 +3,12 @@ export type ConnectionMode = 'websocket' | 'webhook';
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type IntentHint = 'chat' | 'task' | 'ambiguous';
 export type TaskResponseMode = 'silent' | 'verbose';
+export type ModelCommandAction = 'list' | 'current' | 'set' | 'reset';
+
+export interface ModelCommandRequest {
+  action: ModelCommandAction;
+  model?: string;
+}
 
 export interface FeishuBotConfig {
   appId: string;
@@ -64,6 +70,7 @@ export interface BotResponse {
   card?: Record<string, unknown>;
   executeCommand?: string;
   intentHint?: IntentHint;
+  modelCommand?: ModelCommandRequest;
   sendFilePath?: string;
   resetSession?: boolean;
 }
@@ -82,6 +89,7 @@ export interface TaskInfo {
   id: string;
   status: TaskStatus;
   responseMode?: TaskResponseMode;
+  model?: string;
   command: string;
   userId: string;
   chatId: string;

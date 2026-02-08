@@ -2,7 +2,7 @@ import { FeishuBot } from './bot/feishu-bot.js';
 import { config } from './config.js';
 import { OpencodeExecutor } from './executor/opencode-executor.js';
 import { MessageHandler } from './relay/message-handler.js';
-import type { FeishuMessageEvent, IntentHint, TaskInfo, TaskResponseMode } from './types.js';
+import type { FeishuMessageEvent, IntentHint, ModelCommandRequest, TaskInfo, TaskResponseMode } from './types.js';
 import { logger } from './utils/logger.js';
 import { constants as fsConstants } from 'fs';
 import { access, mkdir, rm } from 'fs/promises';
@@ -19,6 +19,7 @@ export class OpenCodeFeishuBridge {
   private pendingFilesBySession = new Map<string, string[]>();
   private taskAttachedFiles = new Map<string, string[]>();
   private taskResponseMode = new Map<string, TaskResponseMode>();
+  private sessionModelByBridgeSession = new Map<string, string>();
   private opencodeSessionByBridgeSession = new Map<string, string>();
   private taskBridgeSession = new Map<string, string>();
   private lastUpdateTime = new Map<string, number>();
@@ -82,6 +83,11 @@ export class OpenCodeFeishuBridge {
         await this.resetBridgeSession(sessionId);
       }
 
+      if (response.modelCommand) {
+        await this.handleModelCommand(chatId, sessionId, response.modelCommand);
+        return;
+      }
+
       if (response.sendFilePath) {
         await this.handleSendFileCommand(chatId, response.sendFilePath);
         return;
@@ -90,13 +96,14 @@ export class OpenCodeFeishuBridge {
       if (response.executeCommand) {
         const filePaths = this.consumePendingFiles(sessionId);
         let responseMode: TaskResponseMode = 'verbose';
+        const modelOverride = this.sessionModelByBridgeSession.get(sessionId);
 
         if (filePaths.length > 0) {
           const fileNames = filePaths.map(filePath => basename(filePath)).join(', ');
           await this.bot.sendMessage(chatId, `📎 已附带文件：${fileNames}`, 'text');
         } else {
           const hint = response.intentHint || 'task';
-          responseMode = await this.resolveResponseMode(hint, response.executeCommand);
+          responseMode = await this.resolveResponseMode(hint, response.executeCommand, modelOverride);
         }
 
         const opencodeSessionId = this.opencodeSessionByBridgeSession.get(sessionId);
@@ -108,6 +115,7 @@ export class OpenCodeFeishuBridge {
           files: filePaths,
           opencodeSessionId,
           responseMode,
+          model: modelOverride,
         });
 
         this.taskBridgeSession.set(task.id, sessionId);
@@ -277,7 +285,11 @@ export class OpenCodeFeishuBridge {
     return this.taskResponseMode.get(taskId) || fallback || 'verbose';
   }
 
-  private async resolveResponseMode(intentHint: IntentHint, command: string): Promise<TaskResponseMode> {
+  private async resolveResponseMode(
+    intentHint: IntentHint,
+    command: string,
+    modelOverride?: string,
+  ): Promise<TaskResponseMode> {
     if (intentHint === 'task') {
       return 'verbose';
     }
@@ -290,7 +302,7 @@ export class OpenCodeFeishuBridge {
       return 'verbose';
     }
 
-    const routing = await this.executor.classifyIntent(command);
+    const routing = await this.executor.classifyIntent(command, modelOverride);
     logger.info(`Intent routing result: label=${routing.label}, confidence=${routing.confidence.toFixed(2)}`);
 
     if (routing.label === 'chat' && routing.confidence >= config.opencode.intentRoutingConfidence) {
@@ -298,6 +310,88 @@ export class OpenCodeFeishuBridge {
     }
 
     return 'verbose';
+  }
+
+  private async handleModelCommand(
+    chatId: string,
+    sessionId: string,
+    modelCommand: ModelCommandRequest,
+  ): Promise<void> {
+    if (modelCommand.action === 'list') {
+      const models = this.executor.listModels();
+      if (models.length === 0) {
+        await this.bot.sendMessage(chatId, '⚠️ 未获取到模型列表。可直接使用 `/model <model_id>` 设置。', 'text');
+        return;
+      }
+
+      const shown = models.slice(0, 30);
+      const lines = shown.map((model, index) => `${index + 1}. ${model}`);
+      const truncated = models.length > shown.length
+        ? `\n... 还有 ${models.length - shown.length} 个模型`
+        : '';
+      await this.bot.sendMessage(
+        chatId,
+        `📚 可用模型（${models.length}）\n${lines.join('\n')}${truncated}`,
+        'text',
+      );
+      return;
+    }
+
+    if (modelCommand.action === 'current') {
+      const current = this.sessionModelByBridgeSession.get(sessionId);
+      const defaultModel = config.opencode.model
+        ? config.opencode.model
+        : '自动检测（opencode models 第一项）';
+
+      if (current) {
+        await this.bot.sendMessage(chatId, `🎯 当前会话模型：\`${current}\``, 'text');
+      } else {
+        await this.bot.sendMessage(chatId, `🎯 当前会话模型：默认（${defaultModel}）`, 'text');
+      }
+      return;
+    }
+
+    if (modelCommand.action === 'reset') {
+      this.sessionModelByBridgeSession.delete(sessionId);
+      this.opencodeSessionByBridgeSession.delete(sessionId);
+
+      const defaultModel = config.opencode.model
+        ? config.opencode.model
+        : '自动检测（opencode models 第一项）';
+      await this.bot.sendMessage(
+        chatId,
+        `♻️ 已恢复默认模型：${defaultModel}\n已自动新开会话上下文。`,
+        'text',
+      );
+      return;
+    }
+
+    const model = modelCommand.model?.trim();
+    if (!model) {
+      await this.bot.sendMessage(chatId, '用法：`/model <model_id>`，或 `/model list` 查看可用模型。', 'text');
+      return;
+    }
+
+    const models = this.executor.listModels();
+    if (models.length > 0 && !models.includes(model)) {
+      const suggestions = models
+        .filter(item => item.toLowerCase().includes(model.toLowerCase()))
+        .slice(0, 5);
+      const suggestText = suggestions.length > 0
+        ? `\n你可能想用：\n${suggestions.map(item => `- ${item}`).join('\n')}`
+        : '';
+
+      await this.bot.sendMessage(
+        chatId,
+        `❌ 模型不存在：\`${model}\`\n请先用 \`/model list\` 选择可用模型。${suggestText}`,
+        'text',
+      );
+      return;
+    }
+
+    this.sessionModelByBridgeSession.set(sessionId, model);
+    this.opencodeSessionByBridgeSession.delete(sessionId);
+    await this.bot.sendMessage(chatId, `✅ 已切换会话模型为：\`${model}\`\n已自动新开会话上下文。`, 'text');
   }
 
   private extractSenderId(event: FeishuMessageEvent): string {

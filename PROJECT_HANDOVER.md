@@ -80,6 +80,18 @@
   - `OPENCODE_INTENT_CONFIDENCE`
 - 文件：`src/relay/message-handler.ts`、`src/index.ts`、`src/executor/opencode-executor.ts`、`src/config.ts`、`src/types.ts`
 
+### 11) 会话内模型切换（/model）
+
+- 新增 `/model` 指令：
+  - `/model list`
+  - `/model current`
+  - `/model <model_id>`
+  - `/model reset`
+- 模型设置按“同一用户 + 同一聊天会话”隔离
+- 切换模型后自动清理当前 opencode session，避免模型与旧上下文混用
+- 执行器支持任务级 model override，确保会话覆盖模型可透传到 `opencode run --model`
+- 文件：`src/relay/message-handler.ts`、`src/index.ts`、`src/executor/opencode-executor.ts`、`src/types.ts`
+
 ## 运行方式（当前有效）
 
 > 当前代码读取环境变量，不读取 `config.json`。
@@ -144,7 +156,7 @@ tail -f logs/bridge.log
 - `scripts/preflight.sh`
 - `scripts/install-systemd-user.sh`
 
-## 11) GitHub 发布与可部署性增强（2026-02-08）
+## 12) GitHub 发布与可部署性增强（2026-02-08）
 
 ### 安全治理
 

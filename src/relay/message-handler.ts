@@ -1,5 +1,13 @@
 import { config } from '../config.js';
-import type { BotResponse, FeishuMessageEvent, IntentHint, SessionInfo, TaskInfo, TaskResponseMode } from '../types.js';
+import type {
+  BotResponse,
+  FeishuMessageEvent,
+  IntentHint,
+  ModelCommandRequest,
+  SessionInfo,
+  TaskInfo,
+  TaskResponseMode,
+} from '../types.js';
 
 export class MessageHandler {
   private sessions: Map<string, SessionInfo> = new Map();
@@ -61,6 +69,11 @@ export class MessageHandler {
         text: '🆕 已新开会话。请发送下一条任务。',
         resetSession: true,
       };
+    }
+
+    const modelCommand = this.extractModelCommand(extracted);
+    if (modelCommand) {
+      return { modelCommand };
     }
 
     const executeCommand = extracted.startsWith('!')
@@ -264,6 +277,7 @@ export class MessageHandler {
         '• `!history` / `!hist` 查看历史任务',
         '• `!clear` / `!c` 清空会话历史',
         '• `/new` 或 `!new` 新开会话',
+        '• `/model list|current|reset|<model>` 切换会话模型',
         '• `!sendfile <path>` 发送本地文件到当前会话',
         '• 直接发任务文本（群聊请 @机器人）',
       ].join('\n'),
@@ -324,6 +338,33 @@ export class MessageHandler {
     }
 
     return { shouldReset: true, command: remainder };
+  }
+
+  private extractModelCommand(input: string): ModelCommandRequest | null {
+    const text = input.trim();
+    if (!text) {
+      return null;
+    }
+
+    const match = text.match(/^[/!]model(?:\s+(.+))?$/i);
+    if (!match) {
+      return null;
+    }
+
+    const arg = (match[1] || '').trim();
+    if (!arg || /^current$/i.test(arg)) {
+      return { action: 'current' };
+    }
+
+    if (/^list$/i.test(arg)) {
+      return { action: 'list' };
+    }
+
+    if (/^reset$/i.test(arg)) {
+      return { action: 'reset' };
+    }
+
+    return { action: 'set', model: arg };
   }
 
   private inferIntentHint(command: string): IntentHint {

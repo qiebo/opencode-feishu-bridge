@@ -15,6 +15,7 @@
 - 接收飞书文件并通过 `--file` 传给 opencode
 - 会话复用：同一用户 + 同一聊天默认复用上下文
 - 支持 `/new` 或 `!new` 强制新建会话
+- 支持 `/model` 会话内切换模型
 
 ## GitHub 发布前检查（重要）
 
@@ -67,7 +68,7 @@
 - `OPENCODE_MAX_CONCURRENT`（默认 `5`）
 - `OPENCODE_AUTO_MODEL_DETECT`（默认 `true`）
 - `OPENCODE_INTENT_ROUTING_ENABLED`（默认 `true`，仅对歧义消息启用意图分类）
-- `OPENCODE_INTENT_ROUTING_TIMEOUT`（默认 `4000`）
+- `OPENCODE_INTENT_ROUTING_TIMEOUT`（默认 `8000`）
 - `OPENCODE_INTENT_CONFIDENCE`（默认 `0.75`，分类为 `chat` 且高于阈值才静默模式）
 - `REQUIRE_MENTION`（默认 `true`）
 - `SESSION_TIMEOUT`（默认 `3600000`）
@@ -122,6 +123,7 @@ journalctl --user -u opencode-feishu-bridge.service -f
 - `!status` / `!s`
 - `!history` / `!hist`
 - `!clear` / `!c`
+- `/model list|current|reset|<model_id>`（会话内模型切换）
 - `!sendfile <path>`（将服务器本地文件发回飞书）
 - `/new` 或 `!new`（新开 opencode 会话）
 
@@ -130,6 +132,18 @@ journalctl --user -u opencode-feishu-bridge.service -f
 - 同一用户 + 同一聊天会话默认复用同一个 opencode session
 - 发送 `/new` 或 `!new` 时重置会话
 - 发送“新开/重置 会话(session/上下文)”这类自然语言也会触发新会话
+
+## 模型切换
+
+- `/model list`：查看可用模型
+- `/model current`：查看当前会话模型
+- `/model <model_id>`：切换当前会话模型
+- `/model reset`：恢复默认模型
+
+说明：
+
+- 模型切换是“会话级”设置（同一用户 + 同一聊天会话生效）
+- 切换模型后会自动清理当前 opencode session，上下文从新会话开始
 
 ## 回复策略（聊天 vs 任务）
 

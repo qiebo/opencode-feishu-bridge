@@ -19,6 +19,7 @@ interface QueuedTask {
   workingDir?: string;
   files?: string[];
   opencodeSessionId?: string;
+  model?: string;
 }
 
 export interface IntentClassificationResult {
@@ -51,14 +52,26 @@ export class OpencodeExecutor extends EventEmitter {
     files?: string[];
     opencodeSessionId?: string;
     responseMode?: TaskInfo['responseMode'];
+    model?: string;
   }): Promise<TaskInfo> {
-    const { command, userId, chatId, messageId, workingDir, files, opencodeSessionId, responseMode } = params;
+    const {
+      command,
+      userId,
+      chatId,
+      messageId,
+      workingDir,
+      files,
+      opencodeSessionId,
+      responseMode,
+      model,
+    } = params;
 
     const taskId = this.generateTaskId();
     const taskInfo: TaskInfo = {
       id: taskId,
       status: 'pending',
       responseMode,
+      model,
       command,
       userId,
       chatId,
@@ -73,19 +86,19 @@ export class OpencodeExecutor extends EventEmitter {
 
     if (this.runningCount >= this.maxConcurrent) {
       logger.info(`Task ${taskId} queued (concurrent limit reached)`);
-      this.taskQueue.push({ taskInfo, workingDir, files, opencodeSessionId });
+      this.taskQueue.push({ taskInfo, workingDir, files, opencodeSessionId, model });
       this.emit('task:queued', { task: taskInfo });
       return taskInfo;
     }
 
-    await this.startTask(taskInfo, workingDir, files, opencodeSessionId);
+    await this.startTask(taskInfo, workingDir, files, opencodeSessionId, model);
     return taskInfo;
   }
 
-  async classifyIntent(command: string): Promise<IntentClassificationResult> {
+  async classifyIntent(command: string, modelOverride?: string): Promise<IntentClassificationResult> {
     const cwd = config.opencode.workingDir || process.cwd();
     const opencodePath = config.opencode.path;
-    const model = await this.resolveModel();
+    const model = modelOverride || await this.resolveModel();
     const prompt = this.buildIntentRoutingPrompt(command);
     const args = this.buildOpencodeArgs(prompt, model);
     const timeout = Math.max(3000, config.opencode.intentRoutingTimeout || 15000);
@@ -204,11 +217,13 @@ export class OpencodeExecutor extends EventEmitter {
     workingDir?: string,
     files?: string[],
     opencodeSessionId?: string,
+    modelOverride?: string,
   ): Promise<void> {
     const { id, command } = taskInfo;
     const cwd = workingDir || config.opencode.workingDir || process.cwd();
     const opencodePath = config.opencode.path;
-    const model = await this.resolveModel();
+    const model = modelOverride || taskInfo.model || await this.resolveModel();
+    taskInfo.model = model;
     const args = this.buildOpencodeArgs(command, model, files, opencodeSessionId);
 
     taskInfo.status = 'running';
@@ -571,7 +586,7 @@ export class OpencodeExecutor extends EventEmitter {
       return;
     }
 
-    this.startTask(next.taskInfo, next.workingDir, next.files, next.opencodeSessionId).catch((error: unknown) => {
+    this.startTask(next.taskInfo, next.workingDir, next.files, next.opencodeSessionId, next.model).catch((error: unknown) => {
       const taskError = error instanceof Error ? error : new Error(String(error));
       next.taskInfo.status = 'failed';
       next.taskInfo.error = taskError.message;
@@ -651,6 +666,30 @@ export class OpencodeExecutor extends EventEmitter {
     } catch (error) {
       logger.warn('Failed to detect opencode model automatically', error);
       return undefined;
+    }
+  }
+
+  listModels(): string[] {
+    try {
+      const result = spawnSync(config.opencode.path, ['models'], {
+        cwd: config.opencode.workingDir || process.cwd(),
+        env: process.env,
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+
+      if (result.status !== 0) {
+        logger.warn('opencode models command failed', result.stderr?.toString() || '');
+        return [];
+      }
+
+      return result.stdout
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean);
+    } catch (error) {
+      logger.warn('Failed to list opencode models', error);
+      return [];
     }
   }
 
