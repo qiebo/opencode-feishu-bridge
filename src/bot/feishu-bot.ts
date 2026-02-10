@@ -54,6 +54,10 @@ export class FeishuBot extends EventEmitter {
     await this.wsClient.sendFile(chatId, filePath);
   }
 
+  async sendImage(chatId: string, imageInput: string): Promise<void> {
+    await this.wsClient.sendImage(chatId, imageInput);
+  }
+
   async downloadMessageFile(params: {
     messageId: string;
     fileKey: string;

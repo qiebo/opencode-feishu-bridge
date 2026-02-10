@@ -2,7 +2,14 @@ import { FeishuBot } from './bot/feishu-bot.js';
 import { config } from './config.js';
 import { OpencodeExecutor } from './executor/opencode-executor.js';
 import { MessageHandler } from './relay/message-handler.js';
-import type { FeishuMessageEvent, IntentHint, ModelCommandRequest, TaskInfo, TaskResponseMode } from './types.js';
+import type {
+  BotResponse,
+  FeishuMessageEvent,
+  IntentHint,
+  ModelCommandRequest,
+  TaskInfo,
+  TaskResponseMode,
+} from './types.js';
 import { logger } from './utils/logger.js';
 import { constants as fsConstants } from 'fs';
 import { access, mkdir, rm } from 'fs/promises';
@@ -15,11 +22,13 @@ export class OpenCodeFeishuBridge {
   private readonly STREAMING_INTERVAL = config.opencode.streamingInterval;
   private readonly uploadStagingDir = join(config.opencode.workingDir, '.feishu_uploads');
   private readonly MAX_PENDING_FILES = 5;
+  private readonly MAX_RESULT_IMAGES = 3;
   private pendingProgress = new Map<string, string[]>();
   private pendingFilesBySession = new Map<string, string[]>();
   private taskAttachedFiles = new Map<string, string[]>();
   private taskResponseMode = new Map<string, TaskResponseMode>();
   private sessionModelByBridgeSession = new Map<string, string>();
+  private lastKnownModelByBridgeSession = new Map<string, string>();
   private opencodeSessionByBridgeSession = new Map<string, string>();
   private taskBridgeSession = new Map<string, string>();
   private lastUpdateTime = new Map<string, number>();
@@ -75,9 +84,7 @@ export class OpenCodeFeishuBridge {
         return;
       }
 
-      if (response.text) {
-        await this.bot.sendMessage(chatId, response.text, 'text');
-      }
+      await this.sendBotResponse(chatId, response);
 
       if (response.resetSession) {
         await this.resetBridgeSession(sessionId);
@@ -96,7 +103,7 @@ export class OpenCodeFeishuBridge {
       if (response.executeCommand) {
         const filePaths = this.consumePendingFiles(sessionId);
         let responseMode: TaskResponseMode = 'verbose';
-        const modelOverride = this.sessionModelByBridgeSession.get(sessionId);
+        const modelOverride = this.resolvePreferredModelForSession(sessionId);
 
         if (filePaths.length > 0) {
           const fileNames = filePaths.map(filePath => basename(filePath)).join(', ');
@@ -162,9 +169,7 @@ export class OpenCodeFeishuBridge {
       }
       this.lastUpdateTime.set(task.id, Date.now());
       const response = this.handler.handleTaskStart(task);
-      if (response.text) {
-        await this.bot.sendMessage(task.chatId, response.text, 'text');
-      }
+      await this.sendBotResponse(task.chatId, response);
     });
 
     this.executor.on(
@@ -185,12 +190,23 @@ export class OpenCodeFeishuBridge {
       }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
-      this.taskResponseMode.delete(task.id);
-      this.taskBridgeSession.delete(task.id);
+        this.taskResponseMode.delete(task.id);
+        this.rememberTaskModel(task);
+        this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
       const response = this.handler.handleTaskComplete(task, { mode });
-      if (response.text) {
-        await this.bot.sendMessage(task.chatId, response.text, 'text');
+      await this.sendBotResponse(task.chatId, response);
+
+      const images = this.extractImagesFromOutput(task.output.join(''));
+      if (images.length > 0) {
+        await this.bot.sendMessage(task.chatId, `🖼️ 附带参考图片（${images.length} 张）`, 'text');
+      }
+      for (const image of images) {
+        try {
+          await this.bot.sendImage(task.chatId, image);
+        } catch (error) {
+          logger.warn(`Failed to send image ${image}`, error);
+        }
       }
     });
 
@@ -202,12 +218,11 @@ export class OpenCodeFeishuBridge {
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
       this.taskResponseMode.delete(task.id);
+      this.rememberTaskModel(task);
       this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
       const response = this.handler.handleTaskError(task, error, { mode });
-      if (response.text) {
-        await this.bot.sendMessage(task.chatId, response.text, 'text');
-      }
+      await this.sendBotResponse(task.chatId, response);
     });
 
     this.executor.on('task:cancelled', async ({ task, reason }: { task: TaskInfo; reason: string }) => {
@@ -218,13 +233,12 @@ export class OpenCodeFeishuBridge {
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
       this.taskResponseMode.delete(task.id);
+      this.rememberTaskModel(task);
       this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
       logger.info(`Task ${task.id} cancelled: ${reason}`);
       const response = this.handler.handleTaskUpdate(task, { mode });
-      if (response.text) {
-        await this.bot.sendMessage(task.chatId, response.text, 'text');
-      }
+      await this.sendBotResponse(task.chatId, response);
     });
 
     process.on('SIGINT', () => {
@@ -242,7 +256,22 @@ export class OpenCodeFeishuBridge {
 
   private queueProgress(taskId: string, progress: string): void {
     const chunks = this.pendingProgress.get(taskId) || [];
-    chunks.push(progress);
+
+    const lines = progress
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (!chunks.includes(line)) {
+        chunks.push(line);
+      }
+    }
+
+    while (chunks.length > 12) {
+      chunks.shift();
+    }
+
     this.pendingProgress.set(taskId, chunks);
   }
 
@@ -257,18 +286,33 @@ export class OpenCodeFeishuBridge {
     }
 
     this.pendingProgress.set(task.id, []);
-    const merged = chunks.join('');
+    const merged = chunks.join('\n');
     if (merged.trim().length === 0) {
       return;
     }
 
     const response = this.handler.handleTaskProgress(task, merged);
-    if (!response.text) {
+    if (!response.text && !response.card) {
       return;
     }
 
-    await this.bot.sendMessage(task.chatId, response.text, 'text');
+    await this.sendBotResponse(task.chatId, response);
     this.lastUpdateTime.set(task.id, Date.now());
+  }
+
+  private async sendBotResponse(chatId: string, response: BotResponse): Promise<void> {
+    if (response.card) {
+      try {
+        await this.bot.sendMessage(chatId, JSON.stringify(response.card), 'interactive');
+        return;
+      } catch (error) {
+        logger.warn('Failed to send interactive card, fallback to text', error);
+      }
+    }
+
+    if (response.text) {
+      await this.bot.sendMessage(chatId, response.text, 'text');
+    }
   }
 
   private cleanupProgressState(taskId: string): void {
@@ -279,6 +323,59 @@ export class OpenCodeFeishuBridge {
   private shouldSendUpdate(taskId: string): boolean {
     const lastTime = this.lastUpdateTime.get(taskId) || 0;
     return Date.now() - lastTime >= this.STREAMING_INTERVAL;
+  }
+
+  private resolvePreferredModelForSession(sessionId: string): string | undefined {
+    return this.sessionModelByBridgeSession.get(sessionId) || this.lastKnownModelByBridgeSession.get(sessionId);
+  }
+
+  private rememberTaskModel(task: TaskInfo): void {
+    if (!task.model) {
+      return;
+    }
+
+    const bridgeSessionId = this.taskBridgeSession.get(task.id);
+    if (!bridgeSessionId) {
+      return;
+    }
+
+    this.lastKnownModelByBridgeSession.set(bridgeSessionId, task.model);
+  }
+
+  private extractImagesFromOutput(rawOutput: string): string[] {
+    const sources: string[] = [];
+
+    const markdownImageRegex = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/gi;
+    let markdownMatch = markdownImageRegex.exec(rawOutput);
+    while (markdownMatch) {
+      const url = markdownMatch[1];
+      if (url) {
+        sources.push(url);
+      }
+      markdownMatch = markdownImageRegex.exec(rawOutput);
+    }
+
+    const directUrlRegex = /(https?:\/\/[^\s)"'<>]+\.(?:png|jpe?g|webp|gif|bmp|tiff|ico)(?:\?[^\s)"'<>]*)?)/gi;
+    let directMatch = directUrlRegex.exec(rawOutput);
+    while (directMatch) {
+      const url = directMatch[1];
+      if (url) {
+        sources.push(url);
+      }
+      directMatch = directUrlRegex.exec(rawOutput);
+    }
+
+    const unique: string[] = [];
+    for (const source of sources) {
+      if (!unique.includes(source)) {
+        unique.push(source);
+      }
+      if (unique.length >= this.MAX_RESULT_IMAGES) {
+        break;
+      }
+    }
+
+    return unique;
   }
 
   private getTaskResponseMode(taskId: string, fallback?: TaskResponseMode): TaskResponseMode {
@@ -338,7 +435,7 @@ export class OpenCodeFeishuBridge {
     }
 
     if (modelCommand.action === 'current') {
-      const current = this.sessionModelByBridgeSession.get(sessionId);
+      const current = this.resolvePreferredModelForSession(sessionId);
       const defaultModel = config.opencode.model
         ? config.opencode.model
         : '自动检测（opencode models 第一项）';
@@ -353,6 +450,7 @@ export class OpenCodeFeishuBridge {
 
     if (modelCommand.action === 'reset') {
       this.sessionModelByBridgeSession.delete(sessionId);
+      this.lastKnownModelByBridgeSession.delete(sessionId);
       this.opencodeSessionByBridgeSession.delete(sessionId);
 
       const defaultModel = config.opencode.model
@@ -390,6 +488,7 @@ export class OpenCodeFeishuBridge {
     }
 
     this.sessionModelByBridgeSession.set(sessionId, model);
+    this.lastKnownModelByBridgeSession.set(sessionId, model);
     this.opencodeSessionByBridgeSession.delete(sessionId);
     await this.bot.sendMessage(chatId, `✅ 已切换会话模型为：\`${model}\`\n已自动新开会话上下文。`, 'text');
   }

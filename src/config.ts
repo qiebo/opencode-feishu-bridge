@@ -28,6 +28,8 @@ export interface Config {
     intentRoutingEnabled: boolean;
     intentRoutingTimeout: number;
     intentRoutingConfidence: number;
+    progressStatusOnly: boolean;
+    resultCardEnabled: boolean;
   };
   session: {
     timeout: number;
@@ -66,6 +68,8 @@ const defaultConfig: Config = {
     intentRoutingEnabled: process.env.OPENCODE_INTENT_ROUTING_ENABLED !== 'false',
     intentRoutingTimeout: parseInt(process.env.OPENCODE_INTENT_ROUTING_TIMEOUT || '8000'),
     intentRoutingConfidence: parseFloat(process.env.OPENCODE_INTENT_CONFIDENCE || '0.75'),
+    progressStatusOnly: process.env.OPENCODE_PROGRESS_STATUS_ONLY !== 'false',
+    resultCardEnabled: process.env.OPENCODE_RESULT_CARD_ENABLED !== 'false',
   },
   session: {
     timeout: parseInt(process.env.SESSION_TIMEOUT || '3600000'),

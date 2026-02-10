@@ -92,6 +92,31 @@
 - 执行器支持任务级 model override，确保会话覆盖模型可透传到 `opencode run --model`
 - 文件：`src/relay/message-handler.ts`、`src/index.ts`、`src/executor/opencode-executor.ts`、`src/types.ts`
 
+### 12) 长结果可读性与进度降噪优化（2026-02-10）
+
+- 执行中进度改为“状态/工具调用”模式：
+  - 只推送阶段状态（分析中、调用工具中、阶段完成等）
+  - 不再推送半成品正文，避免中间消息大段重复
+- 完成消息改为结构化输出：
+  - 去除相邻重复行
+  - 对纯长文本按句分段，提升可读性
+  - 显示耗时与模型信息（不再展示任务 ID）
+- 图片增强：
+  - 从最终输出自动提取图片链接（Markdown 图片 / 常见图片 URL）
+  - 自动上传并发送到飞书（最多 3 张，失败不影响主流程）
+- 新增配置项：
+  - `OPENCODE_PROGRESS_STATUS_ONLY=true`（默认开启）
+  - `OPENCODE_RESULT_CARD_ENABLED=true`（默认开启）
+- 完成消息卡片化（适配调研/问答场景）：
+  - 完成后优先发送飞书 `interactive` 卡片（类型/耗时/模型/核心结论/详细结果）
+  - `silent` 模式下短答复仍可走纯文本，长答复和结构化答复优先卡片
+  - 卡片发送失败自动回退到纯文本，不影响主流程
+- `/new` 与模型保持策略：
+  - `/new` 仅重置 opencode session 上下文，不清空会话模型偏好
+  - 新增“最近已知模型”记忆，避免新会话回落到默认模型
+  - 仅 `/model reset` 会清空会话模型并恢复默认
+- 文件：`src/executor/opencode-executor.ts`、`src/relay/message-handler.ts`、`src/index.ts`、`src/bot/feishu-ws-client.ts`、`src/bot/feishu-bot.ts`、`src/config.ts`、`README.md`、`.env.example`
+
 ## 运行方式（当前有效）
 
 > 当前代码读取环境变量，不读取 `config.json`。
@@ -156,7 +181,7 @@ tail -f logs/bridge.log
 - `scripts/preflight.sh`
 - `scripts/install-systemd-user.sh`
 
-## 12) GitHub 发布与可部署性增强（2026-02-08）
+## 13) GitHub 发布与可部署性增强（2026-02-08）
 
 ### 安全治理
 

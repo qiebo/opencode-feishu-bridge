@@ -11,11 +11,12 @@
 
 - 飞书长连接（WebSocket）接收消息
 - 私聊/群聊命令解析（群聊可要求 `@机器人`）
-- 调用 `opencode run` 执行任务并流式回传
+- 调用 `opencode run` 执行任务并流式回传（执行中仅状态/工具，不推送半成品正文）
 - 接收飞书文件并通过 `--file` 传给 opencode
 - 会话复用：同一用户 + 同一聊天默认复用上下文
 - 支持 `/new` 或 `!new` 强制新建会话
 - 支持 `/model` 会话内切换模型
+- 任务完成后自动提取并发送结果中的图片链接（最多 3 张）
 
 ## GitHub 发布前检查（重要）
 
@@ -70,6 +71,8 @@
 - `OPENCODE_INTENT_ROUTING_ENABLED`（默认 `true`，仅对歧义消息启用意图分类）
 - `OPENCODE_INTENT_ROUTING_TIMEOUT`（默认 `8000`）
 - `OPENCODE_INTENT_CONFIDENCE`（默认 `0.75`，分类为 `chat` 且高于阈值才静默模式）
+- `OPENCODE_PROGRESS_STATUS_ONLY`（默认 `true`，执行中仅发送状态/工具调用）
+- `OPENCODE_RESULT_CARD_ENABLED`（默认 `true`，完成结果优先用飞书卡片展示）
 - `REQUIRE_MENTION`（默认 `true`）
 - `SESSION_TIMEOUT`（默认 `3600000`）
 - `SESSION_MAX_HISTORY`（默认 `20`）
@@ -132,6 +135,7 @@ journalctl --user -u opencode-feishu-bridge.service -f
 - 同一用户 + 同一聊天会话默认复用同一个 opencode session
 - 发送 `/new` 或 `!new` 时重置会话
 - 发送“新开/重置 会话(session/上下文)”这类自然语言也会触发新会话
+- `/new` 只重置上下文，不会重置当前会话模型（模型重置请用 `/model reset`）
 
 ## 模型切换
 
@@ -150,6 +154,13 @@ journalctl --user -u opencode-feishu-bridge.service -f
 - 明确任务指令：直接走 `verbose`（开始/进度/完成）
 - 明确闲聊问答：直接走 `silent`（仅最终结果）
 - 歧义消息：先调用一次 opencode 做意图分类，再决定 `silent` 或 `verbose`
+
+### 任务消息显示策略
+
+- 执行中：只显示状态和工具调用摘要，例如“正在调用 read 工具”“工具步骤完成”
+- 执行中不会发送不完整正文，减少重复与噪音
+- 执行完成：优先发送结构化卡片（摘要 + 详细结果），发送失败自动回退纯文本
+- 若结果中包含图片 URL（Markdown 图片或常见图片后缀链接），会自动附图发送（默认最多 3 张）
 
 ## 常见问题
 

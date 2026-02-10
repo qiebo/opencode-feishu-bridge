@@ -12,6 +12,7 @@ interface RunningTask {
   timeoutHandle: NodeJS.Timeout;
   finalized: boolean;
   stdoutBuffer: string;
+  lastProgressSignature: string;
 }
 
 interface QueuedTask {
@@ -222,7 +223,10 @@ export class OpencodeExecutor extends EventEmitter {
     const { id, command } = taskInfo;
     const cwd = workingDir || config.opencode.workingDir || process.cwd();
     const opencodePath = config.opencode.path;
-    const model = modelOverride || taskInfo.model || await this.resolveModel();
+    const shouldInheritModelFromSession = Boolean(opencodeSessionId) && !modelOverride && !taskInfo.model;
+    const model = shouldInheritModelFromSession
+      ? undefined
+      : (modelOverride || taskInfo.model || await this.resolveModel());
     taskInfo.model = model;
     const args = this.buildOpencodeArgs(command, model, files, opencodeSessionId);
 
@@ -269,6 +273,7 @@ export class OpencodeExecutor extends EventEmitter {
       timeoutHandle,
       finalized: false,
       stdoutBuffer: '',
+      lastProgressSignature: '',
     };
 
     this.runningTasks.set(id, runningTask);
@@ -278,7 +283,7 @@ export class OpencodeExecutor extends EventEmitter {
     });
 
     child.stderr?.on('data', (data: Buffer | string) => {
-      this.handleTaskOutput(runningTask, data, true);
+      this.handleTaskStderr(runningTask, data);
     });
 
     child.on('error', (error: Error) => {
@@ -414,9 +419,11 @@ export class OpencodeExecutor extends EventEmitter {
     try {
       parsed = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
-      this.handleTaskOutput(runningTask, trimmed, false);
+      this.handleTaskOutput(runningTask, trimmed);
       return;
     }
+
+    this.handleStructuredProgressEvent(runningTask, parsed);
 
     const sessionId = this.extractSessionId(parsed);
     if (sessionId && runningTask.info.opencodeSessionId !== sessionId) {
@@ -426,11 +433,11 @@ export class OpencodeExecutor extends EventEmitter {
 
     const text = this.extractTextPart(parsed);
     if (text) {
-      this.handleTaskOutput(runningTask, text, false);
+      this.handleTaskOutput(runningTask, text);
     }
   }
 
-  private handleTaskOutput(runningTask: RunningTask, data: Buffer | string, isError: boolean): void {
+  private handleTaskOutput(runningTask: RunningTask, data: Buffer | string): void {
     const output = typeof data === 'string' ? data : data.toString();
     if (!output) {
       return;
@@ -439,12 +446,193 @@ export class OpencodeExecutor extends EventEmitter {
     runningTask.output.push(output);
     runningTask.info.output.push(output);
     runningTask.info.progress = output.length > 500 ? `${output.substring(0, 500)}...` : output;
+  }
+
+  private handleTaskStderr(runningTask: RunningTask, data: Buffer | string): void {
+    this.handleTaskOutput(runningTask, data);
+    if (config.opencode.progressStatusOnly) {
+      this.emitProgress(runningTask, '⚠️ 收到错误输出，正在继续处理');
+    }
+  }
+
+  private handleStructuredProgressEvent(runningTask: RunningTask, parsed: Record<string, unknown>): void {
+    if (!config.opencode.progressStatusOnly) {
+      return;
+    }
+
+    const type = typeof parsed.type === 'string' ? parsed.type : '';
+    if (!type) {
+      return;
+    }
+
+    if (type === 'step_start') {
+      const stepKind = this.extractStepKind(parsed);
+      if (stepKind === 'reasoning') {
+        this.emitProgress(runningTask, '🧠 正在分析任务');
+      } else if (stepKind === 'tool') {
+        this.emitProgress(runningTask, '🛠️ 正在准备调用工具');
+      } else {
+        this.emitProgress(runningTask, '🔄 正在处理步骤');
+      }
+      return;
+    }
+
+    if (type === 'step_finish') {
+      const stepKind = this.extractStepKind(parsed);
+      if (stepKind === 'tool') {
+        this.emitProgress(runningTask, '✅ 工具步骤完成');
+      } else if (stepKind === 'reasoning') {
+        this.emitProgress(runningTask, '✅ 分析完成，正在整理结果');
+      } else {
+        this.emitProgress(runningTask, '✅ 阶段执行完成');
+      }
+      return;
+    }
+
+    if (type === 'tool_use') {
+      const toolEvent = this.extractToolUse(parsed);
+      if (!toolEvent) {
+        this.emitProgress(runningTask, '🛠️ 正在调用工具');
+        return;
+      }
+
+      const { tool, status, detail } = toolEvent;
+      const toolLabel = tool || '工具';
+      const suffix = detail ? `：${detail}` : '';
+
+      if (status === 'failed' || status === 'error' || status === 'cancelled') {
+        this.emitProgress(runningTask, `⚠️ ${toolLabel} 调用异常${suffix}`);
+        return;
+      }
+
+      if (status === 'completed' || status === 'success' || status === 'done') {
+        this.emitProgress(runningTask, `✅ ${toolLabel} 已完成`);
+        return;
+      }
+
+      this.emitProgress(runningTask, `🛠️ 正在调用 ${toolLabel}${suffix}`);
+    }
+  }
+
+  private emitProgress(runningTask: RunningTask, progress: string): void {
+    const normalized = progress.replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+      return;
+    }
+
+    const signature = normalized.toLowerCase();
+    if (signature === runningTask.lastProgressSignature) {
+      return;
+    }
+    runningTask.lastProgressSignature = signature;
 
     this.emit('task:progress', {
       task: runningTask.info,
-      progress: output,
-      isError,
+      progress: normalized,
+      isError: false,
     });
+  }
+
+  private extractStepKind(parsed: Record<string, unknown>): string {
+    const part = parsed.part;
+    if (!part || typeof part !== 'object') {
+      return '';
+    }
+
+    const type = (part as Record<string, unknown>).type;
+    return typeof type === 'string' ? type.toLowerCase() : '';
+  }
+
+  private extractToolUse(parsed: Record<string, unknown>): {
+    tool?: string;
+    status: string;
+    detail?: string;
+  } | null {
+    const part = parsed.part;
+    if (!part || typeof part !== 'object') {
+      return null;
+    }
+
+    const partRecord = part as Record<string, unknown>;
+    const state = partRecord.state && typeof partRecord.state === 'object'
+      ? partRecord.state as Record<string, unknown>
+      : undefined;
+
+    const tool = this.pickFirstString([
+      partRecord.title,
+      partRecord.tool,
+      partRecord.name,
+      state?.title,
+      state?.tool,
+      state?.name,
+    ]);
+
+    const status = this.pickFirstString([
+      partRecord.status,
+      state?.status,
+    ])?.toLowerCase() || 'running';
+
+    const detail = this.summarizeToolInput(this.pickFirstDefined([
+      partRecord.input,
+      state?.input,
+    ]));
+
+    return { tool, status, detail };
+  }
+
+  private summarizeToolInput(input: unknown): string | undefined {
+    if (typeof input === 'string') {
+      const compact = input.replace(/\s+/g, ' ').trim();
+      if (!compact) {
+        return undefined;
+      }
+      return compact.length > 80 ? `${compact.substring(0, 80)}...` : compact;
+    }
+
+    if (!input || typeof input !== 'object') {
+      return undefined;
+    }
+
+    const obj = input as Record<string, unknown>;
+    const knownKeys = ['command', 'query', 'pattern', 'path', 'file', 'url', 'name', 'repo', 'task'];
+    for (const key of knownKeys) {
+      const value = obj[key];
+      if (typeof value !== 'string') {
+        continue;
+      }
+
+      const compactValue = value.replace(/\s+/g, ' ').trim();
+      if (!compactValue) {
+        continue;
+      }
+
+      const preview = compactValue.length > 60 ? `${compactValue.substring(0, 60)}...` : compactValue;
+      return `${key}=${preview}`;
+    }
+
+    const keys = Object.keys(obj).slice(0, 3);
+    if (keys.length === 0) {
+      return undefined;
+    }
+    return `参数: ${keys.join(', ')}`;
+  }
+
+  private pickFirstString(values: Array<unknown>): string | undefined {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
+  private pickFirstDefined(values: Array<unknown>): unknown {
+    for (const value of values) {
+      if (value !== undefined && value !== null) {
+        return value;
+      }
+    }
+    return undefined;
   }
 
   private extractSessionId(parsed: Record<string, unknown>): string | undefined {

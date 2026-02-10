@@ -13,6 +13,9 @@ export class MessageHandler {
   private sessions: Map<string, SessionInfo> = new Map();
   private taskSessionIndex: Map<string, string> = new Map();
   private readonly MAX_HISTORY = Math.max(1, config.session.maxHistory || 10);
+  private readonly SILENT_CARD_MIN_LENGTH = 260;
+  private readonly CARD_DETAIL_MAX_LENGTH = 2400;
+  private readonly CARD_HIGHLIGHT_MAX_COUNT = 5;
 
   async handleMessage(event: FeishuMessageEvent): Promise<BotResponse | null> {
     const message = event.event?.message;
@@ -95,39 +98,47 @@ export class MessageHandler {
   handleTaskStart(task: TaskInfo): BotResponse {
     this.updateTask(task);
     return {
-      text: `🚀 任务已开始\n任务 ID：\`${task.id}\``,
+      text: '🚀 任务已开始',
     };
   }
 
   handleTaskProgress(task: TaskInfo, progress: string): BotResponse {
     this.updateTask(task);
     const compact = this.normalizeOutput(progress);
-    const truncatedOutput = compact.length > 500
-      ? `${compact.substring(0, 500)}...`
-      : compact;
+    const lines = compact
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+    const uniqueLines: string[] = [];
+
+    for (const line of lines) {
+      if (!uniqueLines.includes(line)) {
+        uniqueLines.push(line);
+      }
+    }
+
+    const displayLines = uniqueLines.slice(-4);
+    const body = displayLines.length > 0
+      ? displayLines.map(line => `• ${line}`).join('\n')
+      : '• 正在处理...';
 
     return {
-      text: `📝 执行中\n${truncatedOutput || '(处理中...)'}`,
+      text: `📝 执行进度\n${body}`,
     };
   }
 
   handleTaskComplete(task: TaskInfo, options?: { mode?: TaskResponseMode }): BotResponse {
     this.updateTask(task);
-    const output = this.normalizeOutput(task.output.join(''));
+    const rawOutput = task.output.join('');
+    const output = this.formatFinalOutput(rawOutput);
     const mode = options?.mode || 'verbose';
-
-    if (mode === 'silent') {
-      const compactText = output.length > 1800 ? `${output.substring(0, 1800)}...` : output;
-      return {
-        text: compactText || '（无回复）',
-      };
-    }
-
-    const truncated = output.length > 1200 ? output.substring(output.length - 1200) : output;
-    const duration = task.duration ? `（${(task.duration / 1000).toFixed(2)}s）` : '';
+    const fallbackText = this.buildCompletionFallbackText(task, output, mode);
+    const shouldUseCard = this.shouldUseCompletionCard(mode, output);
+    const card = shouldUseCard ? this.buildCompletionCard(task, output, mode) : undefined;
 
     return {
-      text: `✅ 任务完成${duration}\n任务 ID：\`${task.id}\`\n\`\`\`\n${truncated || '(无输出)'}\n\`\`\``,
+      text: fallbackText,
+      card,
     };
   }
 
@@ -140,7 +151,7 @@ export class MessageHandler {
       };
     }
     return {
-      text: `❌ 任务失败\n任务 ID：\`${task.id}\`\n原因：${error.message}`,
+      text: `❌ 任务失败\n原因：${error.message}`,
     };
   }
 
@@ -153,7 +164,7 @@ export class MessageHandler {
       };
     }
     return {
-      text: `任务 \`${task.id}\` 状态：${task.status}`,
+      text: `⚠️ 任务状态：${task.status}`,
     };
   }
 
@@ -448,6 +459,271 @@ export class MessageHandler {
       .filter(line => line.trim().length > 0)
       .join('\n')
       .trim();
+  }
+
+  private formatFinalOutput(output: string): string {
+    const normalized = this.normalizeOutput(output);
+    if (!normalized) {
+      return '';
+    }
+
+    const deduped = this.dedupeAdjacentLines(normalized);
+    if (this.isStructuredMarkdown(deduped)) {
+      return deduped;
+    }
+
+    return this.segmentPlainText(deduped);
+  }
+
+  private dedupeAdjacentLines(text: string): string {
+    const lines = text.split('\n');
+    const result: string[] = [];
+    let previous = '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd();
+      if (line && line === previous) {
+        continue;
+      }
+      result.push(line);
+      previous = line;
+    }
+
+    return result.join('\n').trim();
+  }
+
+  private isStructuredMarkdown(text: string): boolean {
+    return /(^|\n)(#{1,6}\s|[-*]\s|\d+\.\s|```|>\s)/.test(text);
+  }
+
+  private segmentPlainText(text: string): string {
+    const compact = text.replace(/[ \t]+/g, ' ').trim();
+    if (compact.length < 240) {
+      return compact;
+    }
+
+    const sentences = compact
+      .split(/(?<=[。！？!?\.])\s+/)
+      .map(item => item.trim())
+      .filter(Boolean);
+
+    if (sentences.length < 4) {
+      return compact;
+    }
+
+    const paragraphs: string[] = [];
+    for (let i = 0; i < sentences.length; i += 2) {
+      paragraphs.push(sentences.slice(i, i + 2).join(' '));
+    }
+
+    return paragraphs.join('\n\n');
+  }
+
+  private shouldUseCompletionCard(mode: TaskResponseMode, output: string): boolean {
+    if (!config.opencode.resultCardEnabled) {
+      return false;
+    }
+
+    if (mode === 'verbose') {
+      return true;
+    }
+
+    if (output.length >= this.SILENT_CARD_MIN_LENGTH) {
+      return true;
+    }
+
+    if (this.isStructuredMarkdown(output)) {
+      return true;
+    }
+
+    if (/(https?:\/\/\S+)/i.test(output)) {
+      return true;
+    }
+
+    return output.split('\n').length >= 5;
+  }
+
+  private buildCompletionFallbackText(task: TaskInfo, output: string, mode: TaskResponseMode): string {
+    if (mode === 'silent') {
+      const compactText = output.length > 2200 ? `${output.substring(0, 2200)}...` : output;
+      return compactText || '（无回复）';
+    }
+
+    const duration = task.duration ? `（${(task.duration / 1000).toFixed(2)}s）` : '';
+    const modelInfo = task.model ? `\n模型：\`${task.model}\`` : '';
+    const maxLength = 5200;
+    const isTruncated = output.length > maxLength;
+    const finalText = isTruncated ? `${output.substring(0, maxLength)}\n\n（内容较长，已截断）` : output;
+    const readable = finalText || '（无输出）';
+    return `✅ 任务完成${duration}${modelInfo}\n\n${readable}`;
+  }
+
+  private buildCompletionCard(
+    task: TaskInfo,
+    output: string,
+    mode: TaskResponseMode,
+  ): Record<string, unknown> {
+    const title = mode === 'silent' ? '回答完成' : '任务完成';
+    const duration = task.duration ? `${(task.duration / 1000).toFixed(2)}s` : '未知';
+    const model = task.model || '默认';
+    const resultType = this.detectResultType(task.command, output);
+
+    const highlights = this.extractHighlights(output, this.CARD_HIGHLIGHT_MAX_COUNT);
+    const highlightMarkdown = highlights.length > 0
+      ? highlights.map((line, index) => `${index + 1}. ${line}`).join('\n')
+      : '1. 已完成，本次回复以“详细结果”为准。';
+
+    const truncatedDetail = this.truncateText(output || '（无输出）', this.CARD_DETAIL_MAX_LENGTH);
+    const detailMarkdown = this.toCardMarkdown(truncatedDetail.text);
+
+    const elements: Array<Record<string, unknown>> = [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**类型**：${resultType}  \n**耗时**：${duration}  \n**模型**：${model}`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**核心结论**\n${highlightMarkdown}`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**详细结果**\n${detailMarkdown}`,
+        },
+      },
+    ];
+
+    if (truncatedDetail.truncated) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: '_结果较长，卡片内已截断。可继续追问“继续展开第 X 点”。_',
+        },
+      });
+    }
+
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      header: {
+        template: 'green',
+        title: {
+          tag: 'plain_text',
+          content: `✅ ${title}`,
+        },
+      },
+      elements,
+    };
+  }
+
+  private detectResultType(command: string, output: string): string {
+    const source = `${command}\n${output}`;
+    if (/(调研|研究|对比|分析|盘点|评估|research|investigate|survey|benchmark)/i.test(source)) {
+      return '调研结果';
+    }
+    if (/(问答|问题|回答|解释|说明|什么|如何|为什么|why|how|what)/i.test(command)) {
+      return '问答结果';
+    }
+    if (/(总结|结论|summary)/i.test(source)) {
+      return '总结结果';
+    }
+    return '任务结果';
+  }
+
+  private extractHighlights(output: string, maxCount: number): string[] {
+    if (!output) {
+      return [];
+    }
+
+    const highlights: string[] = [];
+    const push = (value: string): void => {
+      const normalized = this.normalizeHighlightLine(value);
+      if (!normalized) {
+        return;
+      }
+      if (!highlights.includes(normalized)) {
+        highlights.push(normalized);
+      }
+    };
+
+    const lines = output
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (highlights.length >= maxCount) {
+        return highlights;
+      }
+      if (/^(\d+[.)]|[-*•])\s+/.test(line) || /^#{1,3}\s+/.test(line)) {
+        push(line);
+      }
+    }
+
+    if (highlights.length >= maxCount) {
+      return highlights;
+    }
+
+    const compact = output.replace(/\s+/g, ' ').trim();
+    const sentences = compact
+      .split(/(?<=[。！？!?\.])\s+/)
+      .map(sentence => sentence.trim())
+      .filter(Boolean);
+
+    for (const sentence of sentences) {
+      if (highlights.length >= maxCount) {
+        break;
+      }
+      push(sentence);
+    }
+
+    return highlights;
+  }
+
+  private normalizeHighlightLine(line: string): string {
+    const stripped = line
+      .replace(/^(\d+[.)]|[-*•])\s+/, '')
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!stripped) {
+      return '';
+    }
+
+    if (stripped.length <= 140) {
+      return stripped;
+    }
+
+    return `${stripped.substring(0, 140)}...`;
+  }
+
+  private toCardMarkdown(text: string): string {
+    const escaped = text
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped.length > 0 ? escaped : '（无详细内容）';
+  }
+
+  private truncateText(text: string, maxLength: number): { text: string; truncated: boolean } {
+    if (text.length <= maxLength) {
+      return { text, truncated: false };
+    }
+    return {
+      text: `${text.substring(0, maxLength)}\n\n（内容较长，已截断）`,
+      truncated: true,
+    };
   }
 
   private handleStatus(): BotResponse {
