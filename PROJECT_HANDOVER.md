@@ -216,3 +216,26 @@ tail -f logs/bridge.log
 1. 上传前再次确认 `.env.runtime` 未被提交
 2. 若历史中出现过真实密钥，务必先在飞书后台轮换
 3. 首次部署按 README 的“systemd 一键部署”流程执行
+
+## 14) Opencode 安全自动更新触发机制（2026-02-14）
+
+- 新增脚本：
+  - `scripts/opencode-safe-update.sh`：安全更新执行器（备份、健康检查、失败回滚、任务运行中跳过）
+  - `scripts/install-opencode-auto-update.sh`：安装 user-level `systemd` 更新服务与定时器
+- 触发机制：
+  - 定时触发：`OnCalendar`（默认 `*-*-* 04:20:00`）
+  - 开机补偿：`Persistent=true`
+  - 手动触发：`systemctl --user start opencode-update.service`
+- 安全门控：
+  - 检测到 `opencode run` 在执行任务时，本轮跳过更新
+  - 更新前备份当前二进制，升级失败自动回滚
+  - 可选更新前后自动停启桥接服务并检查服务状态
+- 相关新增环境变量：
+  - `OPENCODE_AUTO_UPDATE_ENABLED`
+  - `OPENCODE_UPDATE_ON_CALENDAR`
+  - `OPENCODE_UPDATE_RANDOMIZED_DELAY`
+  - `OPENCODE_UPDATE_METHOD`
+  - `OPENCODE_UPDATE_TARGET`
+  - `OPENCODE_UPDATE_BRIDGE_SERVICE`
+  - `OPENCODE_UPDATE_RESTART_BRIDGE`
+  - `OPENCODE_UPDATE_MAX_BACKUPS`

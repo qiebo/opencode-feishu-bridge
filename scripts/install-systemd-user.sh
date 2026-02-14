@@ -56,3 +56,8 @@ echo "Installed and started: $SERVICE_NAME"
 echo "Service file: $SERVICE_FILE"
 echo "Check status: systemctl --user status $SERVICE_NAME --no-pager"
 echo "Tail logs: journalctl --user -u $SERVICE_NAME -f"
+
+if [ -f "$PROJECT_DIR/.env.runtime" ] && grep -q '^OPENCODE_AUTO_UPDATE_ENABLED=true' "$PROJECT_DIR/.env.runtime"; then
+  echo "Auto-update is enabled in .env.runtime."
+  echo "Install timer: bash $PROJECT_DIR/scripts/install-opencode-auto-update.sh"
+fi

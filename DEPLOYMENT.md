@@ -56,7 +56,42 @@ journalctl --user -u opencode-feishu-bridge.service -f
 
 Expected signal in logs: `ws client ready`.
 
-## 7. Upgrade Flow
+## 7. Optional: Enable Safe Auto Update for Opencode
+
+Set these in `.env.runtime`:
+
+- `OPENCODE_AUTO_UPDATE_ENABLED=true`
+- `OPENCODE_UPDATE_ON_CALENDAR='*-*-* 04:20:00'` (example)
+- `OPENCODE_UPDATE_RANDOMIZED_DELAY=15m` (example)
+
+Then install timer:
+
+```bash
+bash scripts/install-opencode-auto-update.sh
+```
+
+Verify:
+
+```bash
+systemctl --user status opencode-update.timer --no-pager
+systemctl --user list-timers --all | grep opencode-update
+```
+
+Manual trigger:
+
+```bash
+systemctl --user start opencode-update.service
+tail -f logs/opencode-update.log
+```
+
+Trigger mechanism:
+
+- scheduled trigger (`OnCalendar`)
+- reboot compensation (`Persistent=true`)
+- manual trigger (`systemctl --user start opencode-update.service`)
+- safe gate: skip update if `opencode run` is active
+
+## 8. Manual Upgrade Flow
 
 ```bash
 cd opencode-feishu-bridge
@@ -66,7 +101,7 @@ npm run build
 systemctl --user restart opencode-feishu-bridge.service
 ```
 
-## 8. Security Rules
+## 9. Security Rules
 
 - Never commit `.env.runtime`
 - Never store real secrets in `config.json`

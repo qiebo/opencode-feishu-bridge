@@ -75,6 +75,14 @@
 - `OPENCODE_RESULT_CARD_ENABLED`（默认 `true`，完成结果优先用飞书卡片展示）
 - `OPENCODE_NOTIFY_DEFAULT`（默认 `quiet`，任务推送默认模式）
 - `OPENCODE_PROGRESS_NORMAL_INTERVAL`（默认 `480000`，`normal` 模式推送间隔，毫秒）
+- `OPENCODE_AUTO_UPDATE_ENABLED`（默认 `false`，开启 opencode 安全自动更新）
+- `OPENCODE_UPDATE_ON_CALENDAR`（默认 `*-*-* 04:20:00`，systemd 定时规则）
+- `OPENCODE_UPDATE_RANDOMIZED_DELAY`（默认 `15m`，触发随机抖动）
+- `OPENCODE_UPDATE_METHOD`（可选：`curl|npm|pnpm|bun|brew|choco|scoop`）
+- `OPENCODE_UPDATE_TARGET`（可选，指定升级目标版本）
+- `OPENCODE_UPDATE_BRIDGE_SERVICE`（默认 `opencode-feishu-bridge.service`）
+- `OPENCODE_UPDATE_RESTART_BRIDGE`（默认 `true`，更新前后停启桥接服务做健康检查）
+- `OPENCODE_UPDATE_MAX_BACKUPS`（默认 `3`，保留二进制备份数量）
 - `REQUIRE_MENTION`（默认 `true`）
 - `SESSION_TIMEOUT`（默认 `3600000`）
 - `SESSION_MAX_HISTORY`（默认 `20`）
@@ -106,6 +114,12 @@ npm run build
 bash scripts/install-systemd-user.sh
 ```
 
+可选：安装 opencode 安全自动更新定时器
+
+```bash
+bash scripts/install-opencode-auto-update.sh
+```
+
 部署后常用命令：
 
 ```bash
@@ -115,6 +129,23 @@ journalctl --user -u opencode-feishu-bridge.service -f
 ```
 
 脚本会自动尝试执行 `loginctl enable-linger <user>`，保证重启后无需登录也能拉起用户服务。
+
+自动更新相关命令：
+
+```bash
+systemctl --user status opencode-update.timer --no-pager
+systemctl --user list-timers --all | grep opencode-update
+systemctl --user start opencode-update.service
+journalctl --user -u opencode-update.service -f
+tail -f logs/opencode-update.log
+```
+
+触发机制说明：
+
+- 定时触发：按 `OPENCODE_UPDATE_ON_CALENDAR` 触发（默认每天 `04:20`）
+- 开机补偿：`Persistent=true`，关机错过后开机补跑
+- 手动触发：`systemctl --user start opencode-update.service`
+- 安全门控：若检测到 `opencode run` 正在执行任务，本轮自动跳过
 
 ## 飞书内使用方式
 
