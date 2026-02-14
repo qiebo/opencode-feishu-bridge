@@ -9,7 +9,8 @@ interface RunningTask {
   info: TaskInfo;
   output: string[];
   startTime: number;
-  timeoutHandle: NodeJS.Timeout;
+  timeoutHandle?: NodeJS.Timeout;
+  timeoutMs: number;
   finalized: boolean;
   stdoutBuffer: string;
   lastProgressSignature: string;
@@ -257,26 +258,25 @@ export class OpencodeExecutor extends EventEmitter {
       return;
     }
 
-    const timeout = config.opencode.timeout || 300000;
-    const timeoutHandle = setTimeout(() => {
-      if (this.runningTasks.has(id)) {
-        logger.warn(`Task ${id} timed out after ${timeout}ms`);
-        this.cancelTask(id, 'timeout');
-      }
-    }, timeout);
+    const timeoutRaw = Number(config.opencode.timeout);
+    const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0
+      ? Math.floor(timeoutRaw)
+      : 0;
 
     const runningTask: RunningTask = {
       process: child,
       info: taskInfo,
       output: [],
       startTime: Date.now(),
-      timeoutHandle,
+      timeoutHandle: undefined,
+      timeoutMs,
       finalized: false,
       stdoutBuffer: '',
       lastProgressSignature: '',
     };
 
     this.runningTasks.set(id, runningTask);
+    this.markTaskActivity(runningTask);
 
     child.stdout?.on('data', (data: Buffer | string) => {
       this.handleTaskStdout(runningTask, data);
@@ -356,7 +356,9 @@ export class OpencodeExecutor extends EventEmitter {
     }
     runningTask.finalized = true;
 
-    clearTimeout(runningTask.timeoutHandle);
+    if (runningTask.timeoutHandle) {
+      clearTimeout(runningTask.timeoutHandle);
+    }
 
     const taskInfo = runningTask.info;
     taskInfo.completedAt = new Date();
@@ -390,6 +392,7 @@ export class OpencodeExecutor extends EventEmitter {
       return;
     }
 
+    this.markTaskActivity(runningTask);
     runningTask.stdoutBuffer += chunk;
     let newlineIndex = runningTask.stdoutBuffer.indexOf('\n');
 
@@ -449,10 +452,32 @@ export class OpencodeExecutor extends EventEmitter {
   }
 
   private handleTaskStderr(runningTask: RunningTask, data: Buffer | string): void {
+    this.markTaskActivity(runningTask);
     this.handleTaskOutput(runningTask, data);
     if (config.opencode.progressStatusOnly) {
       this.emitProgress(runningTask, '⚠️ 收到错误输出，正在继续处理');
     }
+  }
+
+  private markTaskActivity(runningTask: RunningTask): void {
+    if (runningTask.finalized || runningTask.timeoutMs <= 0) {
+      return;
+    }
+
+    if (runningTask.timeoutHandle) {
+      clearTimeout(runningTask.timeoutHandle);
+    }
+
+    const taskId = runningTask.info.id;
+    const timeoutMs = runningTask.timeoutMs;
+    runningTask.timeoutHandle = setTimeout(() => {
+      if (!this.runningTasks.has(taskId) || runningTask.finalized) {
+        return;
+      }
+
+      logger.warn(`Task ${taskId} timed out due to no progress after ${timeoutMs}ms`);
+      this.cancelTask(taskId, 'timeout_no_progress');
+    }, timeoutMs);
   }
 
   private handleStructuredProgressEvent(runningTask: RunningTask, parsed: Record<string, unknown>): void {
@@ -932,7 +957,9 @@ export class OpencodeExecutor extends EventEmitter {
       } catch {
         // ignore cleanup kill errors
       }
-      clearTimeout(runningTask.timeoutHandle);
+      if (runningTask.timeoutHandle) {
+        clearTimeout(runningTask.timeoutHandle);
+      }
     }
 
     this.runningTasks.clear();

@@ -1,4 +1,4 @@
-import type { LogLevel } from './types.js';
+import type { LogLevel, NotificationMode } from './types.js';
 
 export interface Config {
   version: string;
@@ -30,6 +30,8 @@ export interface Config {
     intentRoutingConfidence: number;
     progressStatusOnly: boolean;
     resultCardEnabled: boolean;
+    notifyDefaultMode: NotificationMode;
+    normalProgressInterval: number;
   };
   session: {
     timeout: number;
@@ -40,6 +42,14 @@ export interface Config {
     requireMention: boolean;
   };
 }
+
+const parseNotificationMode = (value: string | undefined): NotificationMode => {
+  const normalized = (value || '').trim().toLowerCase();
+  if (normalized === 'quiet' || normalized === 'normal' || normalized === 'debug') {
+    return normalized;
+  }
+  return 'quiet';
+};
 
 const defaultConfig: Config = {
   version: '1.0.0',
@@ -70,6 +80,8 @@ const defaultConfig: Config = {
     intentRoutingConfidence: parseFloat(process.env.OPENCODE_INTENT_CONFIDENCE || '0.75'),
     progressStatusOnly: process.env.OPENCODE_PROGRESS_STATUS_ONLY !== 'false',
     resultCardEnabled: process.env.OPENCODE_RESULT_CARD_ENABLED !== 'false',
+    notifyDefaultMode: parseNotificationMode(process.env.OPENCODE_NOTIFY_DEFAULT),
+    normalProgressInterval: parseInt(process.env.OPENCODE_PROGRESS_NORMAL_INTERVAL || '480000'),
   },
   session: {
     timeout: parseInt(process.env.SESSION_TIMEOUT || '3600000'),

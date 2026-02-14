@@ -4,6 +4,8 @@ import type {
   FeishuMessageEvent,
   IntentHint,
   ModelCommandRequest,
+  NotificationMode,
+  NotifyCommandRequest,
   SessionInfo,
   TaskInfo,
   TaskResponseMode,
@@ -79,6 +81,11 @@ export class MessageHandler {
       return { modelCommand };
     }
 
+    const notifyCommand = this.extractNotifyCommand(extracted);
+    if (notifyCommand) {
+      return { notifyCommand };
+    }
+
     const executeCommand = extracted.startsWith('!')
       ? extracted.substring(1).trim()
       : extracted.trim();
@@ -131,20 +138,22 @@ export class MessageHandler {
     this.updateTask(task);
     const rawOutput = task.output.join('');
     const output = this.formatFinalOutput(rawOutput);
-    const mode = options?.mode || 'verbose';
+    const mode = options?.mode || 'debug';
     const fallbackText = this.buildCompletionFallbackText(task, output, mode);
     const shouldUseCard = this.shouldUseCompletionCard(mode, output);
     const card = shouldUseCard ? this.buildCompletionCard(task, output, mode) : undefined;
+    const followupText = shouldUseCard ? this.buildCardFollowupText(output) : undefined;
 
     return {
       text: fallbackText,
       card,
+      followupText,
     };
   }
 
   handleTaskError(task: TaskInfo, error: Error, options?: { mode?: TaskResponseMode }): BotResponse {
     this.updateTask(task);
-    const mode = options?.mode || 'verbose';
+    const mode = options?.mode || 'debug';
     if (mode === 'silent') {
       return {
         text: `❌ ${error.message}`,
@@ -155,16 +164,23 @@ export class MessageHandler {
     };
   }
 
-  handleTaskUpdate(task: TaskInfo, options?: { mode?: TaskResponseMode }): BotResponse {
+  handleTaskUpdate(task: TaskInfo, options?: { mode?: TaskResponseMode; reason?: string }): BotResponse {
     this.updateTask(task);
-    const mode = options?.mode || 'verbose';
+    const mode = options?.mode || 'debug';
+    const reasonText = options?.reason ? this.formatCancelReason(options.reason) : '';
+
     if (mode === 'silent') {
       return {
-        text: `⚠️ 状态：${task.status}`,
+        text: reasonText
+          ? `⚠️ 状态：${task.status}（${reasonText}）`
+          : `⚠️ 状态：${task.status}`,
       };
     }
+
     return {
-      text: `⚠️ 任务状态：${task.status}`,
+      text: reasonText
+        ? `⚠️ 任务状态：${task.status}\n原因：${reasonText}`
+        : `⚠️ 任务状态：${task.status}`,
     };
   }
 
@@ -289,6 +305,7 @@ export class MessageHandler {
         '• `!clear` / `!c` 清空会话历史',
         '• `/new` 或 `!new` 新开会话',
         '• `/model list|current|reset|<model>` 切换会话模型',
+        '• `/notify current|quiet|normal|debug` 设置推送模式',
         '• `!sendfile <path>` 发送本地文件到当前会话',
         '• 直接发任务文本（群聊请 @机器人）',
       ].join('\n'),
@@ -376,6 +393,29 @@ export class MessageHandler {
     }
 
     return { action: 'set', model: arg };
+  }
+
+  private extractNotifyCommand(input: string): NotifyCommandRequest | null {
+    const text = input.trim();
+    if (!text) {
+      return null;
+    }
+
+    const match = text.match(/^[/!]notify(?:\s+(.+))?$/i);
+    if (!match) {
+      return null;
+    }
+
+    const arg = (match[1] || '').trim().toLowerCase();
+    if (!arg || arg === 'current') {
+      return { action: 'current' };
+    }
+
+    if (arg === 'quiet' || arg === 'normal' || arg === 'debug') {
+      return { action: 'set', mode: arg as NotificationMode };
+    }
+
+    return { action: 'set' };
   }
 
   private inferIntentHint(command: string): IntentHint {
@@ -524,7 +564,7 @@ export class MessageHandler {
       return false;
     }
 
-    if (mode === 'verbose') {
+    if (mode !== 'silent') {
       return true;
     }
 
@@ -545,17 +585,32 @@ export class MessageHandler {
 
   private buildCompletionFallbackText(task: TaskInfo, output: string, mode: TaskResponseMode): string {
     if (mode === 'silent') {
-      const compactText = output.length > 2200 ? `${output.substring(0, 2200)}...` : output;
-      return compactText || '（无回复）';
+      return output || '（无回复）';
     }
 
     const duration = task.duration ? `（${(task.duration / 1000).toFixed(2)}s）` : '';
     const modelInfo = task.model ? `\n模型：\`${task.model}\`` : '';
-    const maxLength = 5200;
-    const isTruncated = output.length > maxLength;
-    const finalText = isTruncated ? `${output.substring(0, maxLength)}\n\n（内容较长，已截断）` : output;
-    const readable = finalText || '（无输出）';
+    const readable = output || '（无输出）';
     return `✅ 任务完成${duration}${modelInfo}\n\n${readable}`;
+  }
+
+  private buildCardFollowupText(output: string): string | undefined {
+    if (!output || output.length <= this.CARD_DETAIL_MAX_LENGTH) {
+      return undefined;
+    }
+
+    let start = this.CARD_DETAIL_MAX_LENGTH;
+    const nextLineBreak = output.indexOf('\n', this.CARD_DETAIL_MAX_LENGTH);
+    if (nextLineBreak >= 0 && nextLineBreak - this.CARD_DETAIL_MAX_LENGTH <= 120) {
+      start = nextLineBreak + 1;
+    }
+
+    const overflow = output.substring(start).trim();
+    if (!overflow) {
+      return undefined;
+    }
+
+    return `📄 详细结果（续）\n\n${overflow}`;
   }
 
   private buildCompletionCard(
@@ -724,6 +779,19 @@ export class MessageHandler {
       text: `${text.substring(0, maxLength)}\n\n（内容较长，已截断）`,
       truncated: true,
     };
+  }
+
+  private formatCancelReason(reason: string): string {
+    if (reason === 'timeout_no_progress') {
+      return '长时间无进度，已自动取消';
+    }
+    if (reason === 'timeout') {
+      return '执行超时，已自动取消';
+    }
+    if (reason === 'user_request') {
+      return '用户取消';
+    }
+    return reason;
   }
 
   private handleStatus(): BotResponse {

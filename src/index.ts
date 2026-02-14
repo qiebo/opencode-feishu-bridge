@@ -7,6 +7,8 @@ import type {
   FeishuMessageEvent,
   IntentHint,
   ModelCommandRequest,
+  NotificationMode,
+  NotifyCommandRequest,
   TaskInfo,
   TaskResponseMode,
 } from './types.js';
@@ -19,14 +21,21 @@ export class OpenCodeFeishuBridge {
   private bot: FeishuBot;
   private executor: OpencodeExecutor;
   private handler: MessageHandler;
-  private readonly STREAMING_INTERVAL = config.opencode.streamingInterval;
+  private readonly DEBUG_PROGRESS_INTERVAL = config.opencode.streamingInterval;
+  private readonly NORMAL_PROGRESS_INTERVAL = Math.max(
+    config.opencode.streamingInterval,
+    config.opencode.normalProgressInterval,
+  );
+  private readonly DEFAULT_NOTIFY_MODE = config.opencode.notifyDefaultMode;
   private readonly uploadStagingDir = join(config.opencode.workingDir, '.feishu_uploads');
   private readonly MAX_PENDING_FILES = 5;
   private readonly MAX_RESULT_IMAGES = 3;
+  private readonly MAX_TEXT_CHUNK_LENGTH = 2800;
   private pendingProgress = new Map<string, string[]>();
   private pendingFilesBySession = new Map<string, string[]>();
   private taskAttachedFiles = new Map<string, string[]>();
   private taskResponseMode = new Map<string, TaskResponseMode>();
+  private sessionNotifyMode = new Map<string, NotificationMode>();
   private sessionModelByBridgeSession = new Map<string, string>();
   private lastKnownModelByBridgeSession = new Map<string, string>();
   private opencodeSessionByBridgeSession = new Map<string, string>();
@@ -95,6 +104,11 @@ export class OpenCodeFeishuBridge {
         return;
       }
 
+      if (response.notifyCommand) {
+        await this.handleNotifyCommand(chatId, sessionId, response.notifyCommand);
+        return;
+      }
+
       if (response.sendFilePath) {
         await this.handleSendFileCommand(chatId, response.sendFilePath);
         return;
@@ -102,7 +116,7 @@ export class OpenCodeFeishuBridge {
 
       if (response.executeCommand) {
         const filePaths = this.consumePendingFiles(sessionId);
-        let responseMode: TaskResponseMode = 'verbose';
+        let responseMode: TaskResponseMode = this.getSessionTaskMode(sessionId);
         const modelOverride = this.resolvePreferredModelForSession(sessionId);
 
         if (filePaths.length > 0) {
@@ -110,7 +124,7 @@ export class OpenCodeFeishuBridge {
           await this.bot.sendMessage(chatId, `📎 已附带文件：${fileNames}`, 'text');
         } else {
           const hint = response.intentHint || 'task';
-          responseMode = await this.resolveResponseMode(hint, response.executeCommand, modelOverride);
+          responseMode = await this.resolveResponseMode(sessionId, hint, response.executeCommand, modelOverride);
         }
 
         const opencodeSessionId = this.opencodeSessionByBridgeSession.get(sessionId);
@@ -163,8 +177,9 @@ export class OpenCodeFeishuBridge {
     });
 
     this.executor.on('task:started', async ({ task }: { task: TaskInfo }) => {
+      const mode = this.getTaskResponseMode(task.id, task.responseMode);
       this.handler.updateTask(task);
-      if (this.getTaskResponseMode(task.id, task.responseMode) === 'silent') {
+      if (mode === 'silent') {
         return;
       }
       this.lastUpdateTime.set(task.id, Date.now());
@@ -175,24 +190,25 @@ export class OpenCodeFeishuBridge {
     this.executor.on(
       'task:progress',
       async ({ task, progress }: { task: TaskInfo; progress: string }) => {
-        if (this.getTaskResponseMode(task.id, task.responseMode) === 'silent') {
+        const mode = this.getTaskResponseMode(task.id, task.responseMode);
+        if (mode === 'silent' || mode === 'quiet') {
           return;
         }
-        this.queueProgress(task.id, progress);
-        await this.flushProgress(task, false);
+        this.queueProgress(task.id, progress, mode);
+        await this.flushProgress(task, false, mode);
       },
     );
 
     this.executor.on('task:completed', async ({ task }: { task: TaskInfo }) => {
       const mode = this.getTaskResponseMode(task.id, task.responseMode);
-      if (mode === 'verbose') {
-        await this.flushProgress(task, true);
+      if (mode === 'normal' || mode === 'debug') {
+        await this.flushProgress(task, true, mode);
       }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
-        this.taskResponseMode.delete(task.id);
-        this.rememberTaskModel(task);
-        this.taskBridgeSession.delete(task.id);
+      this.taskResponseMode.delete(task.id);
+      this.rememberTaskModel(task);
+      this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
       const response = this.handler.handleTaskComplete(task, { mode });
       await this.sendBotResponse(task.chatId, response);
@@ -212,8 +228,8 @@ export class OpenCodeFeishuBridge {
 
     this.executor.on('task:error', async ({ task, error }: { task: TaskInfo; error: Error }) => {
       const mode = this.getTaskResponseMode(task.id, task.responseMode);
-      if (mode === 'verbose') {
-        await this.flushProgress(task, true);
+      if (mode === 'normal' || mode === 'debug') {
+        await this.flushProgress(task, true, mode);
       }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
@@ -227,8 +243,8 @@ export class OpenCodeFeishuBridge {
 
     this.executor.on('task:cancelled', async ({ task, reason }: { task: TaskInfo; reason: string }) => {
       const mode = this.getTaskResponseMode(task.id, task.responseMode);
-      if (mode === 'verbose') {
-        await this.flushProgress(task, true);
+      if (mode === 'normal' || mode === 'debug') {
+        await this.flushProgress(task, true, mode);
       }
       this.cleanupProgressState(task.id);
       await this.cleanupTaskFiles(task.id);
@@ -237,7 +253,7 @@ export class OpenCodeFeishuBridge {
       this.taskBridgeSession.delete(task.id);
       this.handler.updateTask(task);
       logger.info(`Task ${task.id} cancelled: ${reason}`);
-      const response = this.handler.handleTaskUpdate(task, { mode });
+      const response = this.handler.handleTaskUpdate(task, { mode, reason });
       await this.sendBotResponse(task.chatId, response);
     });
 
@@ -254,7 +270,7 @@ export class OpenCodeFeishuBridge {
     });
   }
 
-  private queueProgress(taskId: string, progress: string): void {
+  private queueProgress(taskId: string, progress: string, mode: TaskResponseMode): void {
     const chunks = this.pendingProgress.get(taskId) || [];
 
     const lines = progress
@@ -263,6 +279,9 @@ export class OpenCodeFeishuBridge {
       .filter(Boolean);
 
     for (const line of lines) {
+      if (mode === 'normal' && this.isLowValueProgress(line)) {
+        continue;
+      }
       if (!chunks.includes(line)) {
         chunks.push(line);
       }
@@ -275,13 +294,13 @@ export class OpenCodeFeishuBridge {
     this.pendingProgress.set(taskId, chunks);
   }
 
-  private async flushProgress(task: TaskInfo, force: boolean): Promise<void> {
+  private async flushProgress(task: TaskInfo, force: boolean, mode: TaskResponseMode): Promise<void> {
     const chunks = this.pendingProgress.get(task.id) || [];
     if (chunks.length === 0) {
       return;
     }
 
-    if (!force && !this.shouldSendUpdate(task.id)) {
+    if (!force && !this.shouldSendUpdate(task.id, mode)) {
       return;
     }
 
@@ -301,18 +320,99 @@ export class OpenCodeFeishuBridge {
   }
 
   private async sendBotResponse(chatId: string, response: BotResponse): Promise<void> {
+    let cardSent = false;
+
     if (response.card) {
       try {
         await this.bot.sendMessage(chatId, JSON.stringify(response.card), 'interactive');
-        return;
+        cardSent = true;
       } catch (error) {
         logger.warn('Failed to send interactive card, fallback to text', error);
       }
     }
 
-    if (response.text) {
-      await this.bot.sendMessage(chatId, response.text, 'text');
+    if (cardSent) {
+      if (response.followupText && response.followupText.trim().length > 0) {
+        await this.sendTextInChunks(chatId, response.followupText);
+      }
+      return;
     }
+
+    if (response.text && response.text.trim().length > 0) {
+      await this.sendTextInChunks(chatId, response.text);
+      return;
+    }
+
+    if (response.followupText && response.followupText.trim().length > 0) {
+      await this.sendTextInChunks(chatId, response.followupText);
+    }
+  }
+
+  private async sendTextInChunks(chatId: string, text: string): Promise<void> {
+    const chunks = this.splitTextIntoChunks(text, this.MAX_TEXT_CHUNK_LENGTH);
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      if (!chunk) {
+        continue;
+      }
+      if (chunks.length === 1) {
+        await this.bot.sendMessage(chatId, chunk, 'text');
+      } else {
+        await this.bot.sendMessage(chatId, `（${index + 1}/${chunks.length}）\n${chunk}`, 'text');
+      }
+    }
+  }
+
+  private splitTextIntoChunks(text: string, maxLength: number): string[] {
+    const normalized = text.replace(/\r\n/g, '\n').trim();
+    if (!normalized) {
+      return [];
+    }
+
+    if (normalized.length <= maxLength) {
+      return [normalized];
+    }
+
+    const chunks: string[] = [];
+    const lines = normalized.split('\n');
+    let current = '';
+
+    const pushCurrent = (): void => {
+      const candidate = current.trim();
+      if (candidate) {
+        chunks.push(candidate);
+      }
+      current = '';
+    };
+
+    for (const line of lines) {
+      const candidate = current ? `${current}\n${line}` : line;
+      if (candidate.length <= maxLength) {
+        current = candidate;
+        continue;
+      }
+
+      if (current) {
+        pushCurrent();
+      }
+
+      if (line.length <= maxLength) {
+        current = line;
+        continue;
+      }
+
+      let start = 0;
+      while (start < line.length) {
+        chunks.push(line.slice(start, start + maxLength));
+        start += maxLength;
+      }
+    }
+
+    if (current) {
+      pushCurrent();
+    }
+
+    return chunks;
   }
 
   private cleanupProgressState(taskId: string): void {
@@ -320,9 +420,22 @@ export class OpenCodeFeishuBridge {
     this.lastUpdateTime.delete(taskId);
   }
 
-  private shouldSendUpdate(taskId: string): boolean {
+  private shouldSendUpdate(taskId: string, mode: TaskResponseMode): boolean {
+    if (mode === 'silent' || mode === 'quiet') {
+      return false;
+    }
+
     const lastTime = this.lastUpdateTime.get(taskId) || 0;
-    return Date.now() - lastTime >= this.STREAMING_INTERVAL;
+    const interval = mode === 'debug' ? this.DEBUG_PROGRESS_INTERVAL : this.NORMAL_PROGRESS_INTERVAL;
+    return Date.now() - lastTime >= interval;
+  }
+
+  private isLowValueProgress(line: string): boolean {
+    return /(阶段执行完成|工具步骤完成|分析完成，正在整理结果|正在处理步骤)/.test(line);
+  }
+
+  private getSessionTaskMode(sessionId: string): NotificationMode {
+    return this.sessionNotifyMode.get(sessionId) || this.DEFAULT_NOTIFY_MODE;
   }
 
   private resolvePreferredModelForSession(sessionId: string): string | undefined {
@@ -379,16 +492,19 @@ export class OpenCodeFeishuBridge {
   }
 
   private getTaskResponseMode(taskId: string, fallback?: TaskResponseMode): TaskResponseMode {
-    return this.taskResponseMode.get(taskId) || fallback || 'verbose';
+    return this.taskResponseMode.get(taskId) || fallback || this.DEFAULT_NOTIFY_MODE;
   }
 
   private async resolveResponseMode(
+    sessionId: string,
     intentHint: IntentHint,
     command: string,
     modelOverride?: string,
   ): Promise<TaskResponseMode> {
+    const defaultMode = this.getSessionTaskMode(sessionId);
+
     if (intentHint === 'task') {
-      return 'verbose';
+      return defaultMode;
     }
 
     if (intentHint === 'chat') {
@@ -396,7 +512,7 @@ export class OpenCodeFeishuBridge {
     }
 
     if (!config.opencode.intentRoutingEnabled) {
-      return 'verbose';
+      return defaultMode;
     }
 
     const routing = await this.executor.classifyIntent(command, modelOverride);
@@ -406,7 +522,7 @@ export class OpenCodeFeishuBridge {
       return 'silent';
     }
 
-    return 'verbose';
+    return defaultMode;
   }
 
   private async handleModelCommand(
@@ -491,6 +607,43 @@ export class OpenCodeFeishuBridge {
     this.lastKnownModelByBridgeSession.set(sessionId, model);
     this.opencodeSessionByBridgeSession.delete(sessionId);
     await this.bot.sendMessage(chatId, `✅ 已切换会话模型为：\`${model}\`\n已自动新开会话上下文。`, 'text');
+  }
+
+  private async handleNotifyCommand(
+    chatId: string,
+    sessionId: string,
+    notifyCommand: NotifyCommandRequest,
+  ): Promise<void> {
+    const defaultMode = this.DEFAULT_NOTIFY_MODE;
+
+    if (notifyCommand.action === 'current') {
+      const current = this.getSessionTaskMode(sessionId);
+      await this.bot.sendMessage(
+        chatId,
+        `🔔 当前推送模式：\`${current}\`\n${this.describeNotifyMode(current)}\n默认模式：\`${defaultMode}\``,
+        'text',
+      );
+      return;
+    }
+
+    const mode = notifyCommand.mode;
+    if (!mode) {
+      await this.bot.sendMessage(chatId, '用法：`/notify quiet|normal|debug` 或 `/notify current`', 'text');
+      return;
+    }
+
+    this.sessionNotifyMode.set(sessionId, mode);
+    await this.bot.sendMessage(chatId, `✅ 已切换推送模式为：\`${mode}\`\n${this.describeNotifyMode(mode)}`, 'text');
+  }
+
+  private describeNotifyMode(mode: NotificationMode): string {
+    if (mode === 'quiet') {
+      return '开始 + 最终结果，执行中不推送。';
+    }
+    if (mode === 'normal') {
+      return '低频里程碑推送，自动过滤重复/低价值状态。';
+    }
+    return '详细推送（调试模式）。';
   }
 
   private extractSenderId(event: FeishuMessageEvent): string {

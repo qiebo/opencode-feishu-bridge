@@ -64,7 +64,7 @@
 
 ### 可选变量
 
-- `OPENCODE_TIMEOUT`（默认 `300000`）
+- `OPENCODE_TIMEOUT`（默认 `300000`，按“无进度超时”计算；`0` 表示禁用自动超时）
 - `OPENCODE_STREAMING_INTERVAL`（默认 `5000`）
 - `OPENCODE_MAX_CONCURRENT`（默认 `5`）
 - `OPENCODE_AUTO_MODEL_DETECT`（默认 `true`）
@@ -73,6 +73,8 @@
 - `OPENCODE_INTENT_CONFIDENCE`（默认 `0.75`，分类为 `chat` 且高于阈值才静默模式）
 - `OPENCODE_PROGRESS_STATUS_ONLY`（默认 `true`，执行中仅发送状态/工具调用）
 - `OPENCODE_RESULT_CARD_ENABLED`（默认 `true`，完成结果优先用飞书卡片展示）
+- `OPENCODE_NOTIFY_DEFAULT`（默认 `quiet`，任务推送默认模式）
+- `OPENCODE_PROGRESS_NORMAL_INTERVAL`（默认 `480000`，`normal` 模式推送间隔，毫秒）
 - `REQUIRE_MENTION`（默认 `true`）
 - `SESSION_TIMEOUT`（默认 `3600000`）
 - `SESSION_MAX_HISTORY`（默认 `20`）
@@ -127,6 +129,7 @@ journalctl --user -u opencode-feishu-bridge.service -f
 - `!history` / `!hist`
 - `!clear` / `!c`
 - `/model list|current|reset|<model_id>`（会话内模型切换）
+- `/notify current|quiet|normal|debug`（设置任务推送模式）
 - `!sendfile <path>`（将服务器本地文件发回飞书）
 - `/new` 或 `!new`（新开 opencode 会话）
 
@@ -151,15 +154,19 @@ journalctl --user -u opencode-feishu-bridge.service -f
 
 ## 回复策略（聊天 vs 任务）
 
-- 明确任务指令：直接走 `verbose`（开始/进度/完成）
-- 明确闲聊问答：直接走 `silent`（仅最终结果）
-- 歧义消息：先调用一次 opencode 做意图分类，再决定 `silent` 或 `verbose`
+- 明确任务指令：走会话推送模式（默认 `quiet`）
+- 明确闲聊问答：走 `silent`（仅最终结果）
+- 歧义消息：先调用一次 opencode 做意图分类，再决定 `silent` 或会话推送模式
 
 ### 任务消息显示策略
 
 - 执行中：只显示状态和工具调用摘要，例如“正在调用 read 工具”“工具步骤完成”
-- 执行中不会发送不完整正文，减少重复与噪音
+- `quiet`：只发“开始 + 最终结果”，执行中不推送
+- `normal`：低频里程碑推送，过滤“阶段执行完成”等低价值消息
+- `debug`：高频详细推送（调试用）
 - 执行完成：优先发送结构化卡片（摘要 + 详细结果），发送失败自动回退纯文本
+- 长结果自动分段推送：不再在桥接层硬截断，超长内容会按顺序拆分为多条消息
+- 卡片模式下若“详细结果”超出卡片容量，会自动补发“详细结果（续）”分段文本
 - 若结果中包含图片 URL（Markdown 图片或常见图片后缀链接），会自动附图发送（默认最多 3 张）
 
 ## 常见问题

@@ -111,10 +111,23 @@
   - 完成后优先发送飞书 `interactive` 卡片（类型/耗时/模型/核心结论/详细结果）
   - `silent` 模式下短答复仍可走纯文本，长答复和结构化答复优先卡片
   - 卡片发送失败自动回退到纯文本，不影响主流程
+  - 长结果自动分段推送：不再硬截断，文本会按顺序拆分为多条消息
+  - 卡片内容超长时自动补发“详细结果（续）”分段文本，确保最终结果完整
 - `/new` 与模型保持策略：
   - `/new` 仅重置 opencode session 上下文，不清空会话模型偏好
   - 新增“最近已知模型”记忆，避免新会话回落到默认模型
   - 仅 `/model reset` 会清空会话模型并恢复默认
+- 超时策略升级（适配复杂任务）：
+  - `OPENCODE_TIMEOUT` 改为“无进度超时”而不是“总时长超时”
+  - 只要持续有 stdout/stderr 进度，就会自动续期，不会因为任务总时长被取消
+  - 设置 `OPENCODE_TIMEOUT=0` 可禁用自动超时
+  - 任务取消消息会附带具体原因（如“长时间无进度，已自动取消”）
+- 推送策略分级（降噪）：
+  - 新增 `/notify current|quiet|normal|debug` 会话级推送开关
+  - 默认 `quiet`：仅开始 + 最终结果，执行中不推送
+  - `normal`：低频推送里程碑，并过滤“阶段执行完成”等低价值消息
+  - `debug`：保留高频详细推送
+  - 新增配置：`OPENCODE_NOTIFY_DEFAULT`、`OPENCODE_PROGRESS_NORMAL_INTERVAL`
 - 文件：`src/executor/opencode-executor.ts`、`src/relay/message-handler.ts`、`src/index.ts`、`src/bot/feishu-ws-client.ts`、`src/bot/feishu-bot.ts`、`src/config.ts`、`README.md`、`.env.example`
 
 ## 运行方式（当前有效）

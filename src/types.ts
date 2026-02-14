@@ -2,12 +2,19 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type ConnectionMode = 'websocket' | 'webhook';
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type IntentHint = 'chat' | 'task' | 'ambiguous';
-export type TaskResponseMode = 'silent' | 'verbose';
+export type NotificationMode = 'quiet' | 'normal' | 'debug';
+export type TaskResponseMode = 'silent' | NotificationMode;
 export type ModelCommandAction = 'list' | 'current' | 'set' | 'reset';
+export type NotifyCommandAction = 'current' | 'set';
 
 export interface ModelCommandRequest {
   action: ModelCommandAction;
   model?: string;
+}
+
+export interface NotifyCommandRequest {
+  action: NotifyCommandAction;
+  mode?: NotificationMode;
 }
 
 export interface FeishuBotConfig {
@@ -68,9 +75,11 @@ export interface FeishuMessageEvent {
 export interface BotResponse {
   text?: string;
   card?: Record<string, unknown>;
+  followupText?: string;
   executeCommand?: string;
   intentHint?: IntentHint;
   modelCommand?: ModelCommandRequest;
+  notifyCommand?: NotifyCommandRequest;
   sendFilePath?: string;
   resetSession?: boolean;
 }
