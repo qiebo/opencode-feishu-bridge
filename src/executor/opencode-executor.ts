@@ -31,6 +31,15 @@ export interface IntentClassificationResult {
 }
 
 export class OpencodeExecutor extends EventEmitter {
+  private readonly DEFAULT_EXECUTE_POLICY_PROMPT = [
+    '你是运行在用户本机环境中的执行代理。',
+    '当用户请求本机信息、软件安装、环境配置、文件处理、命令执行时，优先直接执行并返回结果。',
+    '不要把本可由你执行的步骤交给用户手动操作。',
+    '仅在需要交互登录、需要 sudo/管理员权限、或存在破坏性风险且未获确认时，才要求用户介入。',
+    '若权限不足，先给出你已完成的检查结果，再给最小必要下一步。',
+    '输出尽量简洁：已执行内容、关键结果、后续动作（若需要）。',
+  ].join('\n');
+
   private runningTasks = new Map<string, RunningTask>();
   private taskStore = new Map<string, TaskInfo>();
   private taskQueue: QueuedTask[] = [];
@@ -55,6 +64,7 @@ export class OpencodeExecutor extends EventEmitter {
     opencodeSessionId?: string;
     responseMode?: TaskInfo['responseMode'];
     model?: string;
+    executeFirst?: boolean;
   }): Promise<TaskInfo> {
     const {
       command,
@@ -66,6 +76,7 @@ export class OpencodeExecutor extends EventEmitter {
       opencodeSessionId,
       responseMode,
       model,
+      executeFirst,
     } = params;
 
     const taskId = this.generateTaskId();
@@ -74,6 +85,7 @@ export class OpencodeExecutor extends EventEmitter {
       status: 'pending',
       responseMode,
       model,
+      executeFirst,
       command,
       userId,
       chatId,
@@ -229,7 +241,8 @@ export class OpencodeExecutor extends EventEmitter {
       ? undefined
       : (modelOverride || taskInfo.model || await this.resolveModel());
     taskInfo.model = model;
-    const args = this.buildOpencodeArgs(command, model, files, opencodeSessionId);
+    const finalPrompt = this.buildTaskPrompt(command, taskInfo.executeFirst !== false);
+    const args = this.buildOpencodeArgs(finalPrompt, model, files, opencodeSessionId);
 
     taskInfo.status = 'running';
     taskInfo.startedAt = new Date();
@@ -828,6 +841,24 @@ export class OpencodeExecutor extends EventEmitter {
       }
     }
     return args;
+  }
+
+  private buildTaskPrompt(userPrompt: string, executeFirst: boolean): string {
+    const trimmed = userPrompt.trim();
+    if (!trimmed) {
+      return userPrompt;
+    }
+
+    if (!executeFirst) {
+      return trimmed;
+    }
+
+    const policy = (config.opencode.executePolicyPrompt || this.DEFAULT_EXECUTE_POLICY_PROMPT).trim();
+    return [
+      policy,
+      '用户请求：',
+      trimmed,
+    ].join('\n\n');
   }
 
   private async resolveModel(): Promise<string | undefined> {

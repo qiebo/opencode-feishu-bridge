@@ -77,6 +77,7 @@ export interface BotResponse {
   card?: Record<string, unknown>;
   followupText?: string;
   executeCommand?: string;
+  executeFirst?: boolean;
   intentHint?: IntentHint;
   modelCommand?: ModelCommandRequest;
   notifyCommand?: NotifyCommandRequest;
@@ -99,6 +100,7 @@ export interface TaskInfo {
   status: TaskStatus;
   responseMode?: TaskResponseMode;
   model?: string;
+  executeFirst?: boolean;
   command: string;
   userId: string;
   chatId: string;

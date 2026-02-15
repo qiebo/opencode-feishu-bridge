@@ -75,6 +75,8 @@
 - `OPENCODE_RESULT_CARD_ENABLED`（默认 `true`，完成结果优先用飞书卡片展示）
 - `OPENCODE_NOTIFY_DEFAULT`（默认 `quiet`，任务推送默认模式）
 - `OPENCODE_PROGRESS_NORMAL_INTERVAL`（默认 `480000`，`normal` 模式推送间隔，毫秒）
+- `OPENCODE_EXECUTE_FIRST_DEFAULT`（默认 `true`，会话默认“代执行优先”）
+- `OPENCODE_EXECUTE_POLICY_PROMPT`（可选，自定义执行策略提示词，支持 `\n`）
 - `OPENCODE_AUTO_UPDATE_ENABLED`（默认 `false`，开启 opencode 安全自动更新）
 - `OPENCODE_UPDATE_ON_CALENDAR`（默认 `*-*-* 04:20:00`，systemd 定时规则）
 - `OPENCODE_UPDATE_RANDOMIZED_DELAY`（默认 `15m`，触发随机抖动）
@@ -161,6 +163,7 @@ tail -f logs/opencode-update.log
 - `!clear` / `!c`
 - `/model list|current|reset|<model_id>`（会话内模型切换）
 - `/notify current|quiet|normal|debug`（设置任务推送模式）
+- `/agent current|execute|guide`（设置会话执行偏好）
 - `!sendfile <path>`（将服务器本地文件发回飞书）
 - `/new` 或 `!new`（新开 opencode 会话）
 
@@ -170,6 +173,7 @@ tail -f logs/opencode-update.log
 - 发送 `/new` 或 `!new` 时重置会话
 - 发送“新开/重置 会话(session/上下文)”这类自然语言也会触发新会话
 - `/new` 只重置上下文，不会重置当前会话模型（模型重置请用 `/model reset`）
+- 执行偏好按会话记忆，可用 `/agent execute|guide` 切换
 
 ## 模型切换
 
@@ -191,6 +195,8 @@ tail -f logs/opencode-update.log
 
 ### 任务消息显示策略
 
+- 执行偏好（默认 `execute`）：本机信息查询、安装软件、命令执行等优先代执行，不再默认只给手动步骤
+- 可切换为 `guide`：优先输出操作建议而非直接执行
 - 执行中：只显示状态和工具调用摘要，例如“正在调用 read 工具”“工具步骤完成”
 - `quiet`：只发“开始 + 最终结果”，执行中不推送
 - `normal`：低频里程碑推送，过滤“阶段执行完成”等低价值消息

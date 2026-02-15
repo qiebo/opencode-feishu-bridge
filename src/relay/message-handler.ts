@@ -12,6 +12,7 @@ import type {
 } from '../types.js';
 
 export class MessageHandler {
+  private readonly SESSION_EXECUTE_FIRST_KEY = 'executeFirst';
   private sessions: Map<string, SessionInfo> = new Map();
   private taskSessionIndex: Map<string, string> = new Map();
   private readonly MAX_HISTORY = Math.max(1, config.session.maxHistory || 10);
@@ -66,6 +67,7 @@ export class MessageHandler {
           text: '🆕 已切换到新会话，开始执行新任务。',
           resetSession: true,
           executeCommand: sessionReset.command,
+          executeFirst: this.getSessionExecuteFirst(session),
           intentHint: this.inferIntentHint(sessionReset.command),
         };
       }
@@ -86,6 +88,11 @@ export class MessageHandler {
       return { notifyCommand };
     }
 
+    const agentPreferenceResponse = this.handleAgentPreferenceCommand(session, extracted);
+    if (agentPreferenceResponse) {
+      return agentPreferenceResponse;
+    }
+
     const executeCommand = extracted.startsWith('!')
       ? extracted.substring(1).trim()
       : extracted.trim();
@@ -98,6 +105,7 @@ export class MessageHandler {
 
     return {
       executeCommand,
+      executeFirst: this.getSessionExecuteFirst(session),
       intentHint: this.inferIntentHint(executeCommand),
     };
   }
@@ -306,6 +314,7 @@ export class MessageHandler {
         '• `/new` 或 `!new` 新开会话',
         '• `/model list|current|reset|<model>` 切换会话模型',
         '• `/notify current|quiet|normal|debug` 设置推送模式',
+        '• `/agent current|execute|guide` 设置“代执行优先”偏好',
         '• `!sendfile <path>` 发送本地文件到当前会话',
         '• 直接发任务文本（群聊请 @机器人）',
       ].join('\n'),
@@ -418,6 +427,61 @@ export class MessageHandler {
     return { action: 'set' };
   }
 
+  private handleAgentPreferenceCommand(session: SessionInfo, input: string): BotResponse | null {
+    const text = input.trim();
+    if (!text) {
+      return null;
+    }
+
+    const match = text.match(/^[/!]agent(?:\s+(.+))?$/i);
+    if (!match) {
+      return null;
+    }
+
+    const arg = (match[1] || '').trim().toLowerCase();
+    if (!arg || arg === 'current') {
+      const current = this.getSessionExecuteFirst(session);
+      return {
+        text: current
+          ? '🤖 当前执行偏好：`execute`（代执行优先）'
+          : '🤖 当前执行偏好：`guide`（说明步骤优先）',
+      };
+    }
+
+    if (arg === 'execute' || arg === 'on' || arg === 'auto' || arg === 'run') {
+      this.setSessionExecuteFirst(session, true);
+      return {
+        text: '✅ 已设置为 `execute`：后续会优先代你执行本机查询与操作任务。',
+      };
+    }
+
+    if (arg === 'guide' || arg === 'manual' || arg === 'off') {
+      this.setSessionExecuteFirst(session, false);
+      return {
+        text: '✅ 已设置为 `guide`：后续会优先给步骤说明，不强制代执行。',
+      };
+    }
+
+    return {
+      text: '用法：`/agent current|execute|guide`',
+    };
+  }
+
+  private getSessionExecuteFirst(session: SessionInfo): boolean {
+    const value = session.context[this.SESSION_EXECUTE_FIRST_KEY];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    const defaultValue = config.opencode.executeFirstDefault;
+    session.context[this.SESSION_EXECUTE_FIRST_KEY] = defaultValue;
+    return defaultValue;
+  }
+
+  private setSessionExecuteFirst(session: SessionInfo, enabled: boolean): void {
+    session.context[this.SESSION_EXECUTE_FIRST_KEY] = enabled;
+  }
+
   private inferIntentHint(command: string): IntentHint {
     const text = command.trim();
     if (!text) {
@@ -454,6 +518,11 @@ export class MessageHandler {
       return true;
     }
 
+    const localOperationPattern = /(本机|系统信息|系统状态|cpu|内存|磁盘|硬盘|网络|ip|端口|进程|服务|环境变量|软件版本|安装包|包管理|apt|yum|dnf|pacman|brew|choco|scoop|npm|pnpm|yarn|pip|conda)/i;
+    if (localOperationPattern.test(text)) {
+      return true;
+    }
+
     if (/^(请|帮我|麻烦|给我)/.test(text) && text.length > 20) {
       return true;
     }
@@ -476,7 +545,7 @@ export class MessageHandler {
     }
 
     const smallTalkMixedPattern = /(hello|hi|hey|你好|嗨|哈喽|在吗|在线吗|你在吗|在不在|忙吗|在嘛)/i;
-    const explicitTaskPattern = /(修复|实现|编写|创建|生成|搜索|查找|分析|运行|执行|部署|安装|调试|测试|报错|错误|异常|代码|文件|命令|fix|implement|create|generate|search|run|execute|debug|test|file|command|bug|issue)/i;
+    const explicitTaskPattern = /(修复|实现|编写|创建|生成|搜索|查找|分析|运行|执行|部署|安装|调试|测试|报错|错误|异常|代码|文件|命令|本机|系统|内存|磁盘|端口|进程|服务|软件|包管理|fix|implement|create|generate|search|run|execute|debug|test|file|command|bug|issue)/i;
     if (shortText && smallTalkMixedPattern.test(normalized) && !explicitTaskPattern.test(normalized)) {
       return true;
     }
@@ -827,8 +896,11 @@ export class MessageHandler {
   }
 
   private handleClear(session: SessionInfo): BotResponse {
+    const executeFirst = this.getSessionExecuteFirst(session);
     session.taskHistory = [];
-    session.context = {};
+    session.context = {
+      [this.SESSION_EXECUTE_FIRST_KEY]: executeFirst,
+    };
     return { text: '🗑️ 会话历史已清空。' };
   }
 
@@ -849,7 +921,9 @@ export class MessageHandler {
       createdAt: new Date(),
       lastActivityAt: new Date(),
       taskHistory: [],
-      context: {},
+      context: {
+        [this.SESSION_EXECUTE_FIRST_KEY]: config.opencode.executeFirstDefault,
+      },
     };
     this.sessions.set(id, session);
     return session;

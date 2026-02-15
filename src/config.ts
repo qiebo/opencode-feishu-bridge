@@ -32,6 +32,8 @@ export interface Config {
     resultCardEnabled: boolean;
     notifyDefaultMode: NotificationMode;
     normalProgressInterval: number;
+    executeFirstDefault: boolean;
+    executePolicyPrompt?: string;
   };
   session: {
     timeout: number;
@@ -82,6 +84,10 @@ const defaultConfig: Config = {
     resultCardEnabled: process.env.OPENCODE_RESULT_CARD_ENABLED !== 'false',
     notifyDefaultMode: parseNotificationMode(process.env.OPENCODE_NOTIFY_DEFAULT),
     normalProgressInterval: parseInt(process.env.OPENCODE_PROGRESS_NORMAL_INTERVAL || '480000'),
+    executeFirstDefault: process.env.OPENCODE_EXECUTE_FIRST_DEFAULT !== 'false',
+    executePolicyPrompt: process.env.OPENCODE_EXECUTE_POLICY_PROMPT
+      ? process.env.OPENCODE_EXECUTE_POLICY_PROMPT.replace(/\\n/g, '\n')
+      : undefined,
   },
   session: {
     timeout: parseInt(process.env.SESSION_TIMEOUT || '3600000'),

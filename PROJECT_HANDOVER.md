@@ -239,3 +239,23 @@ tail -f logs/bridge.log
   - `OPENCODE_UPDATE_BRIDGE_SERVICE`
   - `OPENCODE_UPDATE_RESTART_BRIDGE`
   - `OPENCODE_UPDATE_MAX_BACKUPS`
+
+## 15) 执行偏好记忆与“代执行优先”策略（2026-02-14）
+
+- 新增会话级执行偏好记忆：
+  - 默认值来自 `OPENCODE_EXECUTE_FIRST_DEFAULT`（默认 `true`）
+  - 支持指令 `/agent current|execute|guide`
+  - 同一用户+会话内持久生效（直到切换）
+- 执行器新增策略提示词注入：
+  - 当偏好为 `execute` 时，自动给 opencode 注入“本机信息/安装/命令任务优先代执行”策略
+  - 仅在需要交互登录、权限不足或高风险操作未确认时才回退为手动步骤
+- 支持自定义策略提示词：
+  - `OPENCODE_EXECUTE_POLICY_PROMPT`（支持 `\n` 换行）
+- 相关文件：
+  - `src/relay/message-handler.ts`
+  - `src/index.ts`
+  - `src/executor/opencode-executor.ts`
+  - `src/config.ts`
+  - `src/types.ts`
+  - `.env.example`
+  - `README.md`

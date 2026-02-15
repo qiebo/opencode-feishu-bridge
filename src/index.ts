@@ -137,6 +137,7 @@ export class OpenCodeFeishuBridge {
           opencodeSessionId,
           responseMode,
           model: modelOverride,
+          executeFirst: response.executeFirst,
         });
 
         this.taskBridgeSession.set(task.id, sessionId);
