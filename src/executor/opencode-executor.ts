@@ -39,6 +39,12 @@ export class OpencodeExecutor extends EventEmitter {
     '若权限不足，先给出你已完成的检查结果，再给最小必要下一步。',
     '输出尽量简洁：已执行内容、关键结果、后续动作（若需要）。',
   ].join('\n');
+  private readonly DEFAULT_CONCISE_RESULT_PROMPT = [
+    '默认使用“结果优先”输出：仅返回结论和关键信息，不要过程解释。',
+    '除非用户明确要求“详细解释/详细报告/步骤拆解”，否则禁止展开背景和长篇说明。',
+    '当用户让你判断“有/没有、支持/不支持、成功/失败”时，只给简短判断和必要证据。',
+    '输出格式优先：1行结论 + 最多5条关键点；避免重复复述用户原话。',
+  ].join('\n');
 
   private runningTasks = new Map<string, RunningTask>();
   private taskStore = new Map<string, TaskInfo>();
@@ -849,16 +855,47 @@ export class OpencodeExecutor extends EventEmitter {
       return userPrompt;
     }
 
-    if (!executeFirst) {
+    const sections: string[] = [];
+
+    if (executeFirst) {
+      const executePolicy = (config.opencode.executePolicyPrompt || this.DEFAULT_EXECUTE_POLICY_PROMPT).trim();
+      if (executePolicy) {
+        sections.push(executePolicy);
+      }
+    }
+
+    if (this.shouldUseConciseResultPrompt(trimmed)) {
+      sections.push(this.DEFAULT_CONCISE_RESULT_PROMPT);
+    }
+
+    if (sections.length === 0) {
       return trimmed;
     }
 
-    const policy = (config.opencode.executePolicyPrompt || this.DEFAULT_EXECUTE_POLICY_PROMPT).trim();
-    return [
-      policy,
-      '用户请求：',
-      trimmed,
-    ].join('\n\n');
+    sections.push('用户请求：', trimmed);
+    return sections.join('\n\n');
+  }
+
+  private shouldUseConciseResultPrompt(prompt: string): boolean {
+    if (!config.opencode.conciseResultDefault) {
+      return false;
+    }
+    return !this.isDetailedResponseRequested(prompt);
+  }
+
+  private isDetailedResponseRequested(prompt: string): boolean {
+    const text = prompt.trim();
+    if (!text) {
+      return false;
+    }
+
+    const negativePattern = /(不要|不用|无需|别|不需要)\s*(详细|解释|过程|步骤|报告|点验|分析)/i;
+    if (negativePattern.test(text)) {
+      return false;
+    }
+
+    const detailedPattern = /([/!]detail\b|详细|展开|完整报告|点验报告|详细报告|详细解释|原因分析|过程说明|步骤拆解|原理说明|why|how|explain|analysis|report|breakdown|walkthrough|step\s*by\s*step)/i;
+    return detailedPattern.test(text);
   }
 
   private async resolveModel(): Promise<string | undefined> {

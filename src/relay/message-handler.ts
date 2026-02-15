@@ -19,6 +19,8 @@ export class MessageHandler {
   private readonly SILENT_CARD_MIN_LENGTH = 260;
   private readonly CARD_DETAIL_MAX_LENGTH = 2400;
   private readonly CARD_HIGHLIGHT_MAX_COUNT = 5;
+  private readonly CONCISE_MAX_LENGTH = 900;
+  private readonly CONCISE_MAX_LINES = 6;
 
   async handleMessage(event: FeishuMessageEvent): Promise<BotResponse | null> {
     const message = event.event?.message;
@@ -145,7 +147,8 @@ export class MessageHandler {
   handleTaskComplete(task: TaskInfo, options?: { mode?: TaskResponseMode }): BotResponse {
     this.updateTask(task);
     const rawOutput = task.output.join('');
-    const output = this.formatFinalOutput(rawOutput);
+    const detailed = this.shouldReturnDetailedResult(task.command);
+    const output = this.formatFinalOutput(rawOutput, detailed);
     const mode = options?.mode || 'debug';
     const fallbackText = this.buildCompletionFallbackText(task, output, mode);
     const shouldUseCard = this.shouldUseCompletionCard(mode, output);
@@ -570,18 +573,22 @@ export class MessageHandler {
       .trim();
   }
 
-  private formatFinalOutput(output: string): string {
+  private formatFinalOutput(output: string, detailed: boolean): string {
     const normalized = this.normalizeOutput(output);
     if (!normalized) {
       return '';
     }
 
     const deduped = this.dedupeAdjacentLines(normalized);
-    if (this.isStructuredMarkdown(deduped)) {
-      return deduped;
+    const readable = this.isStructuredMarkdown(deduped)
+      ? deduped
+      : this.segmentPlainText(deduped);
+
+    if (detailed) {
+      return readable;
     }
 
-    return this.segmentPlainText(deduped);
+    return this.toConciseResult(readable);
   }
 
   private dedupeAdjacentLines(text: string): string {
@@ -626,6 +633,65 @@ export class MessageHandler {
     }
 
     return paragraphs.join('\n\n');
+  }
+
+  private shouldReturnDetailedResult(command: string): boolean {
+    if (!config.opencode.conciseResultDefault) {
+      return true;
+    }
+
+    const text = command.trim();
+    if (!text) {
+      return false;
+    }
+
+    const negativePattern = /(不要|不用|无需|别|不需要)\s*(详细|解释|过程|步骤|报告|点验|分析)/i;
+    if (negativePattern.test(text)) {
+      return false;
+    }
+
+    const detailedPattern = /([/!]detail\b|详细|展开|完整报告|点验报告|详细报告|详细解释|原因分析|过程说明|步骤拆解|原理说明|why|how|explain|analysis|report|breakdown|walkthrough|step\s*by\s*step)/i;
+    return detailedPattern.test(text);
+  }
+
+  private toConciseResult(text: string): string {
+    const normalized = text.trim();
+    if (!normalized) {
+      return '';
+    }
+
+    const lines = normalized
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+    if (normalized.length <= this.CONCISE_MAX_LENGTH && lines.length <= this.CONCISE_MAX_LINES) {
+      return normalized;
+    }
+
+    const highlights = this.extractHighlights(normalized, this.CONCISE_MAX_LINES);
+    if (highlights.length > 0) {
+      return highlights.map((line, index) => `${index + 1}. ${line}`).join('\n');
+    }
+
+    const uniqueLines: string[] = [];
+    for (const line of lines) {
+      if (!uniqueLines.includes(line)) {
+        uniqueLines.push(line);
+      }
+      if (uniqueLines.length >= this.CONCISE_MAX_LINES) {
+        break;
+      }
+    }
+
+    const fallback = uniqueLines.join('\n').trim();
+    if (!fallback) {
+      return normalized.length > this.CONCISE_MAX_LENGTH
+        ? `${normalized.substring(0, this.CONCISE_MAX_LENGTH)}...`
+        : normalized;
+    }
+    return fallback.length > this.CONCISE_MAX_LENGTH
+      ? `${fallback.substring(0, this.CONCISE_MAX_LENGTH)}...`
+      : fallback;
   }
 
   private shouldUseCompletionCard(mode: TaskResponseMode, output: string): boolean {

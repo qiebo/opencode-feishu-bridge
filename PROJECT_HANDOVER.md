@@ -259,3 +259,20 @@ tail -f logs/bridge.log
   - `src/types.ts`
   - `.env.example`
   - `README.md`
+
+## 16) 结果精简策略（2026-02-15）
+
+- 默认开启“结果优先、解释从简”：
+  - 执行类任务优先返回结论+关键点，避免冗长过程和重复解释
+  - 尤其针对“有/没有、支持/不支持、成功/失败”类问题，输出简短判断
+- 详细模式触发：
+  - 用户消息明确要求“详细解释/详细报告/步骤拆解”
+  - 或消息中包含 `/detail`
+- 新增环境变量：
+  - `OPENCODE_CONCISE_RESULT_DEFAULT`（默认 `true`）
+- 相关文件：
+  - `src/executor/opencode-executor.ts`
+  - `src/relay/message-handler.ts`
+  - `src/config.ts`
+  - `.env.example`
+  - `README.md`

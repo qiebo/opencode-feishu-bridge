@@ -30,6 +30,7 @@ export interface Config {
     intentRoutingConfidence: number;
     progressStatusOnly: boolean;
     resultCardEnabled: boolean;
+    conciseResultDefault: boolean;
     notifyDefaultMode: NotificationMode;
     normalProgressInterval: number;
     executeFirstDefault: boolean;
@@ -82,6 +83,7 @@ const defaultConfig: Config = {
     intentRoutingConfidence: parseFloat(process.env.OPENCODE_INTENT_CONFIDENCE || '0.75'),
     progressStatusOnly: process.env.OPENCODE_PROGRESS_STATUS_ONLY !== 'false',
     resultCardEnabled: process.env.OPENCODE_RESULT_CARD_ENABLED !== 'false',
+    conciseResultDefault: process.env.OPENCODE_CONCISE_RESULT_DEFAULT !== 'false',
     notifyDefaultMode: parseNotificationMode(process.env.OPENCODE_NOTIFY_DEFAULT),
     normalProgressInterval: parseInt(process.env.OPENCODE_PROGRESS_NORMAL_INTERVAL || '480000'),
     executeFirstDefault: process.env.OPENCODE_EXECUTE_FIRST_DEFAULT !== 'false',

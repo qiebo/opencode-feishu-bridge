@@ -73,6 +73,7 @@
 - `OPENCODE_INTENT_CONFIDENCE`（默认 `0.75`，分类为 `chat` 且高于阈值才静默模式）
 - `OPENCODE_PROGRESS_STATUS_ONLY`（默认 `true`，执行中仅发送状态/工具调用）
 - `OPENCODE_RESULT_CARD_ENABLED`（默认 `true`，完成结果优先用飞书卡片展示）
+- `OPENCODE_CONCISE_RESULT_DEFAULT`（默认 `true`，执行任务默认仅返回结果+关键信息）
 - `OPENCODE_NOTIFY_DEFAULT`（默认 `quiet`，任务推送默认模式）
 - `OPENCODE_PROGRESS_NORMAL_INTERVAL`（默认 `480000`，`normal` 模式推送间隔，毫秒）
 - `OPENCODE_EXECUTE_FIRST_DEFAULT`（默认 `true`，会话默认“代执行优先”）
@@ -196,6 +197,8 @@ tail -f logs/opencode-update.log
 ### 任务消息显示策略
 
 - 执行偏好（默认 `execute`）：本机信息查询、安装软件、命令执行等优先代执行，不再默认只给手动步骤
+- 结果偏好（默认精简）：执行任务默认只给结论和关键点，不展开过程解释
+- 若你明确要求“详细解释/详细报告/步骤拆解”（或消息含 `/detail`），会返回完整细节
 - 可切换为 `guide`：优先输出操作建议而非直接执行
 - 执行中：只显示状态和工具调用摘要，例如“正在调用 read 工具”“工具步骤完成”
 - `quiet`：只发“开始 + 最终结果”，执行中不推送
