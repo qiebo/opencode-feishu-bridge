@@ -31,6 +31,7 @@ export interface Config {
     progressStatusOnly: boolean;
     resultCardEnabled: boolean;
     conciseResultDefault: boolean;
+    cardDedupThreshold: number;
     notifyDefaultMode: NotificationMode;
     normalProgressInterval: number;
     executeFirstDefault: boolean;
@@ -52,6 +53,20 @@ const parseNotificationMode = (value: string | undefined): NotificationMode => {
     return normalized;
   }
   return 'quiet';
+};
+
+const parseCardDedupThreshold = (value: string | undefined): number => {
+  const parsed = Number.parseFloat((value || '').trim());
+  if (!Number.isFinite(parsed)) {
+    return 0.8;
+  }
+  if (parsed < 0) {
+    return 0;
+  }
+  if (parsed > 1) {
+    return 1;
+  }
+  return parsed;
 };
 
 const defaultConfig: Config = {
@@ -84,6 +99,7 @@ const defaultConfig: Config = {
     progressStatusOnly: process.env.OPENCODE_PROGRESS_STATUS_ONLY !== 'false',
     resultCardEnabled: process.env.OPENCODE_RESULT_CARD_ENABLED !== 'false',
     conciseResultDefault: process.env.OPENCODE_CONCISE_RESULT_DEFAULT !== 'false',
+    cardDedupThreshold: parseCardDedupThreshold(process.env.OPENCODE_CARD_DEDUP_THRESHOLD),
     notifyDefaultMode: parseNotificationMode(process.env.OPENCODE_NOTIFY_DEFAULT),
     normalProgressInterval: parseInt(process.env.OPENCODE_PROGRESS_NORMAL_INTERVAL || '480000'),
     executeFirstDefault: process.env.OPENCODE_EXECUTE_FIRST_DEFAULT !== 'false',

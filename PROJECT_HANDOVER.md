@@ -270,6 +270,11 @@ tail -f logs/bridge.log
   - 或消息中包含 `/detail`
 - 新增环境变量：
   - `OPENCODE_CONCISE_RESULT_DEFAULT`（默认 `true`）
+- 卡片去重优化：
+  - 对“核心结论”与“详细结果”做重合度判断
+  - 高重合时合并为单块展示，避免重复阅读
+  - 中重合时仅保留去重后的补充细节
+  - 可通过 `OPENCODE_CARD_DEDUP_THRESHOLD` 调整阈值（默认 `0.8`）
 - 相关文件：
   - `src/executor/opencode-executor.ts`
   - `src/relay/message-handler.ts`

@@ -19,6 +19,7 @@ export class MessageHandler {
   private readonly SILENT_CARD_MIN_LENGTH = 260;
   private readonly CARD_DETAIL_MAX_LENGTH = 2400;
   private readonly CARD_HIGHLIGHT_MAX_COUNT = 5;
+  private readonly CARD_MEDIUM_OVERLAP_FACTOR = 0.7;
   private readonly CONCISE_MAX_LENGTH = 900;
   private readonly CONCISE_MAX_LINES = 6;
 
@@ -764,7 +765,12 @@ export class MessageHandler {
       : '1. 已完成，本次回复以“详细结果”为准。';
 
     const truncatedDetail = this.truncateText(output || '（无输出）', this.CARD_DETAIL_MAX_LENGTH);
-    const detailMarkdown = this.toCardMarkdown(truncatedDetail.text);
+    const overlap = this.analyzeCardContentOverlap(highlights, truncatedDetail.text);
+    const dedupedDetailText = overlap.medium || overlap.high
+      ? this.removeOverlappingDetailLines(truncatedDetail.text, highlights)
+      : truncatedDetail.text;
+    const hasDedupedDetail = dedupedDetailText.trim().length > 0;
+    const detailMarkdown = this.toCardMarkdown(hasDedupedDetail ? dedupedDetailText : truncatedDetail.text);
 
     const elements: Array<Record<string, unknown>> = [
       {
@@ -774,32 +780,71 @@ export class MessageHandler {
           content: `**类型**：${resultType}  \n**耗时**：${duration}  \n**模型**：${model}`,
         },
       },
-      { tag: 'hr' },
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**核心结论**\n${highlightMarkdown}`,
-        },
-      },
-      { tag: 'hr' },
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**详细结果**\n${detailMarkdown}`,
-        },
-      },
     ];
 
-    if (truncatedDetail.truncated) {
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: '_结果较长，卡片内已截断。可继续追问“继续展开第 X 点”。_',
+    if (overlap.high) {
+      const conciseSummary = highlights.length > 0
+        ? highlightMarkdown
+        : this.toCardMarkdown(truncatedDetail.text);
+
+      elements.push(
+        { tag: 'hr' },
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: `**结论（已去重）**\n${conciseSummary}`,
+          },
         },
-      });
+      );
+
+      if (truncatedDetail.truncated) {
+        elements.push({
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: '_结果较长且与结论高度重合，卡片已省略重复细节。可追问“继续展开”。_',
+          },
+        });
+      }
+    } else {
+      elements.push(
+        { tag: 'hr' },
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: `**核心结论**\n${highlightMarkdown}`,
+          },
+        },
+      );
+
+      if (hasDedupedDetail) {
+        elements.push(
+          { tag: 'hr' },
+          {
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: overlap.medium
+                ? `**补充细节（已去重）**\n${detailMarkdown}`
+                : `**详细结果**\n${detailMarkdown}`,
+            },
+          },
+        );
+      }
+
+      if (truncatedDetail.truncated) {
+        elements.push({
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: overlap.medium
+              ? '_结果较长，卡片内已截断且已去重。可继续追问“继续展开第 X 点”。_'
+              : '_结果较长，卡片内已截断。可继续追问“继续展开第 X 点”。_',
+          },
+        });
+      }
     }
 
     return {
@@ -879,6 +924,149 @@ export class MessageHandler {
     }
 
     return highlights;
+  }
+
+  private analyzeCardContentOverlap(
+    highlights: string[],
+    detailText: string,
+  ): { ratio: number; high: boolean; medium: boolean } {
+    if (highlights.length === 0 || !detailText.trim()) {
+      return { ratio: 0, high: false, medium: false };
+    }
+
+    const normalizedHighlights = highlights
+      .map(line => this.normalizeComparableText(line))
+      .filter(Boolean);
+    const normalizedSegments = this.extractComparableSegments(detailText);
+
+    if (normalizedHighlights.length === 0 || normalizedSegments.length === 0) {
+      return { ratio: 0, high: false, medium: false };
+    }
+
+    let matched = 0;
+    for (const highlight of normalizedHighlights) {
+      if (normalizedSegments.some(segment => this.isComparableMatch(highlight, segment))) {
+        matched += 1;
+      }
+    }
+
+    const ratio = matched / normalizedHighlights.length;
+    const highThreshold = config.opencode.cardDedupThreshold;
+    const mediumThreshold = Math.max(0.45, highThreshold * this.CARD_MEDIUM_OVERLAP_FACTOR);
+
+    return {
+      ratio,
+      high: ratio >= highThreshold,
+      medium: ratio >= mediumThreshold,
+    };
+  }
+
+  private removeOverlappingDetailLines(detailText: string, highlights: string[]): string {
+    if (!detailText.trim() || highlights.length === 0) {
+      return detailText.trim();
+    }
+
+    const normalizedHighlights = highlights
+      .map(line => this.normalizeComparableText(line))
+      .filter(Boolean);
+    if (normalizedHighlights.length === 0) {
+      return detailText.trim();
+    }
+
+    const keptLines: string[] = [];
+    const lines = detailText.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const normalizedLine = this.normalizeComparableText(trimmed);
+      if (!normalizedLine) {
+        continue;
+      }
+      const duplicated = normalizedHighlights.some(highlight => this.isComparableMatch(highlight, normalizedLine));
+      if (!duplicated) {
+        keptLines.push(trimmed);
+      }
+    }
+
+    return keptLines.join('\n').trim();
+  }
+
+  private extractComparableSegments(text: string): string[] {
+    const segments: string[] = [];
+    const push = (value: string): void => {
+      const normalized = this.normalizeComparableText(value);
+      if (!normalized) {
+        return;
+      }
+      if (!segments.includes(normalized)) {
+        segments.push(normalized);
+      }
+    };
+
+    for (const line of text.split(/\r?\n/)) {
+      push(line);
+    }
+
+    const compact = text.replace(/\s+/g, ' ').trim();
+    if (compact) {
+      for (const sentence of compact.split(/(?<=[。！？!?\.])\s+/)) {
+        push(sentence);
+      }
+    }
+
+    return segments;
+  }
+
+  private normalizeComparableText(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/[`*_#>\-\[\](){}]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private isComparableMatch(a: string, b: string): boolean {
+    if (!a || !b) {
+      return false;
+    }
+    if (a === b) {
+      return true;
+    }
+
+    const longerLength = Math.max(a.length, b.length);
+    const shorterLength = Math.min(a.length, b.length);
+    if (longerLength === 0 || shorterLength === 0) {
+      return false;
+    }
+
+    if ((a.includes(b) || b.includes(a)) && (shorterLength / longerLength) >= 0.72) {
+      return true;
+    }
+
+    const overlap = this.computeTokenOverlap(a, b);
+    return overlap >= 0.75;
+  }
+
+  private computeTokenOverlap(a: string, b: string): number {
+    const tokensA = a.split(' ').map(token => token.trim()).filter(Boolean);
+    const tokensB = b.split(' ').map(token => token.trim()).filter(Boolean);
+    if (tokensA.length === 0 || tokensB.length === 0) {
+      return 0;
+    }
+
+    const setA = new Set(tokensA);
+    const setB = new Set(tokensB);
+    let shared = 0;
+    for (const token of setA) {
+      if (setB.has(token)) {
+        shared += 1;
+      }
+    }
+
+    return shared / Math.min(setA.size, setB.size);
   }
 
   private normalizeHighlightLine(line: string): string {

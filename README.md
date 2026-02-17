@@ -74,6 +74,7 @@
 - `OPENCODE_PROGRESS_STATUS_ONLY`（默认 `true`，执行中仅发送状态/工具调用）
 - `OPENCODE_RESULT_CARD_ENABLED`（默认 `true`，完成结果优先用飞书卡片展示）
 - `OPENCODE_CONCISE_RESULT_DEFAULT`（默认 `true`，执行任务默认仅返回结果+关键信息）
+- `OPENCODE_CARD_DEDUP_THRESHOLD`（默认 `0.8`，卡片“核心结论/详细结果”重合判定阈值）
 - `OPENCODE_NOTIFY_DEFAULT`（默认 `quiet`，任务推送默认模式）
 - `OPENCODE_PROGRESS_NORMAL_INTERVAL`（默认 `480000`，`normal` 模式推送间隔，毫秒）
 - `OPENCODE_EXECUTE_FIRST_DEFAULT`（默认 `true`，会话默认“代执行优先”）
@@ -205,6 +206,7 @@ tail -f logs/opencode-update.log
 - `normal`：低频里程碑推送，过滤“阶段执行完成”等低价值消息
 - `debug`：高频详细推送（调试用）
 - 执行完成：优先发送结构化卡片（摘要 + 详细结果），发送失败自动回退纯文本
+- 卡片自动去重：若“核心结论”和“详细结果”高度重合，将自动合并或去重展示
 - 长结果自动分段推送：不再在桥接层硬截断，超长内容会按顺序拆分为多条消息
 - 卡片模式下若“详细结果”超出卡片容量，会自动补发“详细结果（续）”分段文本
 - 若结果中包含图片 URL（Markdown 图片或常见图片后缀链接），会自动附图发送（默认最多 3 张）
